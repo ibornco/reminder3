@@ -57,6 +57,9 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
+import android.icu.util.PersianCalendar
+import java.time.LocalDate
+import java.time.temporal.ChronoUnit
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.UUID
@@ -126,31 +129,33 @@ class MainActivity : ComponentActivity() {
                 if (tab == 0) Header(english) { tab = 1 }
                 AnimatedContent(targetState = tab, transitionSpec = { (fadeIn(tween(230)) + slideInHorizontally(tween(230)) { it / 18 }) togetherWith (fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { -it / 22 }) }, label = "tab-transition") { page ->
                     when (page) {
-                        0 -> HomeScreen(reminders, batches, storeOverview, english, { tab = 1 }, { tab = 5 }, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) })
-                        1 -> PersonalHubScreen(reminders, batches, english, { tab = 2 }, { tab = 3 }, { tab = 4 }, { tab = 8 })
-                        2 -> ReminderList(reminders.filter { it.category == "Daily" }, english, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        3 -> SimpleCategory(s("Installments", "اقساط", english), s("Payments and due dates", "پرداخت‌ها و سررسیدها", english), reminders.filter { it.category == "Installments" }, english, { reminderCategory = "Installments"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        4 -> SimpleCategory(s("Birthdays", "تولدها", english), s("Important dates", "تاریخ‌های مهم", english), reminders.filter { it.category == "Birthdays" }, english, { reminderCategory = "Birthdays"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        5 -> StorePortal(context, english) { overview ->
-                            storeOverview = overview
-                            prefs.edit()
-                                .putInt("store_task_count", overview.taskCount)
-                                .putInt("store_done_count", overview.doneCount)
-                                .putInt("store_shift_count", overview.shiftCount)
-                                .putInt("store_batch_count", overview.batchCount)
-                                .putInt("store_expiring_count", overview.expiringCount)
-                                .putString("store_role", overview.role)
-                                .apply()
-                        }
-                        6 -> ProfileScreen(english)
+                        0 -> HomeScreen(reminders, batches, storeOverview, english, { tab = 1 }, { tab = 5 }, { reminderCategory = "Daily"; showReminder = true }, { item -> val updated = item.copy(done = !item.done); reminders = reminders.map { if (it.id == item.id) updated else it }; if (updated.done) cancelReminder(context, item) else scheduleReminder(context, updated); saveReminders(prefs, reminders) })
+                        1 -> PersonalHubScreen(reminders, batches, english, { tab = 2 }, { tab = 3 }, { tab = 4 }, { tab = 8 }, { tab = 9 })
+                        2 -> ReminderList(reminders.filter { it.category == "Daily" }, english, { reminderCategory = "Daily"; showReminder = true }, { item -> val updated = item.copy(done = !item.done); reminders = reminders.map { if (it.id == item.id) updated else it }; if (updated.done) cancelReminder(context, item) else scheduleReminder(context, updated); saveReminders(prefs, reminders) }, { item -> cancelReminder(context, item); reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        3 -> SimpleCategory(s("Installments", "اقساط", english), s("Payments and due dates", "پرداخت‌ها و سررسیدها", english), reminders.filter { it.category == "Installments" }, english, { reminderCategory = "Installments"; showReminder = true }, { item -> cancelReminder(context, item); reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        4 -> SimpleCategory(s("Birthdays", "تولدها", english), s("Important dates", "تاریخ‌های مهم", english), reminders.filter { it.category == "Birthdays" }, english, { reminderCategory = "Birthdays"; showReminder = true }, { item -> cancelReminder(context, item); reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        5 -> Spacer(Modifier.height(0.dp))
+                        6 -> ProfileScreen(context, english)
                         7 -> SettingsScreen(english) { selected ->
                             english = selected
                             prefs.edit().putBoolean("english", selected).apply()
                             val channelName = if (selected) "Reminder alerts" else "اعلان‌های یادآور"
                             context.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("reminders", channelName, NotificationManager.IMPORTANCE_HIGH))
                         }
-                        8 -> SimpleCategory(s("Miscellaneous", "متفرقه", english), s("Other reminders and notes", "یادآورها و یادداشت‌های دیگر", english), reminders.filter { it.category == "Miscellaneous" }, english, { reminderCategory = "Miscellaneous"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        8 -> SimpleCategory(s("Miscellaneous", "متفرقه", english), s("Other reminders and notes", "یادآورها و یادداشت‌های دیگر", english), reminders.filter { it.category == "Miscellaneous" }, english, { reminderCategory = "Miscellaneous"; showReminder = true }, { item -> cancelReminder(context, item); reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        9 -> ExpiryScreen(batches, productCategories, english, { showBatch = true }, { item -> cancelExpiry(context, item); batches = batches.filterNot { it.id == item.id }; saveBatches(prefs, batches) })
                     }
+                }
+                StorePortal(context, english, visible = tab == 5) { overview ->
+                    storeOverview = overview
+                    prefs.edit()
+                        .putInt("store_task_count", overview.taskCount)
+                        .putInt("store_done_count", overview.doneCount)
+                        .putInt("store_shift_count", overview.shiftCount)
+                        .putInt("store_batch_count", overview.batchCount)
+                        .putInt("store_expiring_count", overview.expiringCount)
+                        .putString("store_role", overview.role)
+                        .apply()
                 }
             }
         }
@@ -159,7 +164,7 @@ class MainActivity : ComponentActivity() {
             reminders = reminders + item; saveReminders(prefs, reminders); scheduleReminder(context, item); showReminder = false
         }
         if (showBatch) BatchDialog(barcode, productCategories, english, onScan = { scanner.startScan().addOnSuccessListener { barcode = it.rawValue ?: "" } }, onDismiss = { showBatch = false }, onSave = { product, code, qty, expiry, category ->
-            batches = batches + BatchItem(UUID.randomUUID().toString(), product, code, qty, expiry, category); saveBatches(prefs, batches); scheduleExpiry(context, product, expiry); if (!productCategories.contains(category)) { productCategories = productCategories + category; saveCategories(prefs, productCategories) }; showBatch = false; barcode = ""
+            batches = batches + BatchItem(UUID.randomUUID().toString(), product, code, qty, expiry, category); saveBatches(prefs, batches); scheduleExpiry(context, batches.last().id, product, expiry); if (!productCategories.contains(category)) { productCategories = productCategories + category; saveCategories(prefs, productCategories) }; showBatch = false; barcode = ""
         })
     }
     }
@@ -173,7 +178,7 @@ class MainActivity : ComponentActivity() {
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(s("Good day.", "روز خوبی داشته باشی.", english), color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
-            Text(if (english) today else SimpleDateFormat("yyyy/MM/dd", Locale("fa", "IR")).format(Calendar.getInstance().time), color = Muted, fontSize = 12.sp)
+            Text(if (english) today else todayJalali(), color = Muted, fontSize = 12.sp)
         }
         Surface(shape = RoundedCornerShape(16.dp), color = JournalCard, modifier = Modifier.size(46.dp).border(1.dp, Color.White.copy(alpha = .05f), RoundedCornerShape(16.dp)).clickable { openPersonal() }) {
             Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.GridView, "Personal collections", tint = JournalInk, modifier = Modifier.size(21.dp)) }
@@ -183,7 +188,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable private fun PersonalHubScreen(
     reminders: List<ReminderItem>, batches: List<BatchItem>, english: Boolean,
-    openDaily: () -> Unit, openInstallments: () -> Unit, openBirthdays: () -> Unit, openMisc: () -> Unit
+    openDaily: () -> Unit, openInstallments: () -> Unit, openBirthdays: () -> Unit, openMisc: () -> Unit, openExpiry: () -> Unit
 ) {
     val pending = reminders.count { !it.done }
     val completed = reminders.count { it.done }
@@ -212,6 +217,7 @@ class MainActivity : ComponentActivity() {
         item { PersonalCategoryCard("Installments", "Payments and upcoming due dates", reminders.count { it.category == "Installments" && !it.done }, Icons.Rounded.Event, Color(0xFF9DABFF), openInstallments, english) }
         item { PersonalCategoryCard("Birthdays", "People and dates worth remembering", reminders.count { it.category == "Birthdays" && !it.done }, Icons.Rounded.Cake, Color(0xFFFFB5C8), openBirthdays, english) }
         item { PersonalCategoryCard("Miscellaneous", "Everything else you want to keep close", reminders.count { it.category == "Miscellaneous" && !it.done }, Icons.Rounded.EditNote, Color(0xFFFFC58A), openMisc, english) }
+        item { PersonalCategoryCard("Personal expiry", "Products and their expiry dates", batches.size, Icons.Rounded.Inventory2, Mint, openExpiry, english) }
         item {
             Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -265,7 +271,7 @@ class MainActivity : ComponentActivity() {
     toggleTask: (ReminderItem) -> Unit
 ) {
     var filter by remember { mutableStateOf("All tasks") }
-    val task = remember(reminders) { reminders.filter { it.category == "Daily" && !it.done }.minWithOrNull(compareBy<ReminderItem> { it.date }.thenBy { it.time }) }
+    val task = remember(reminders) { reminders.filter { !it.done && daysUntil(it.date) >= 0 }.minWithOrNull(compareBy<ReminderItem> { it.date }.thenBy { it.time }) }
     val expiringCount = remember(batches) { batches.count { daysUntil(it.expiry) in 0..7 } }
     val work = remember(reminders) { reminders.filter { it.category == "Installments" && !it.done }.minWithOrNull(compareBy<ReminderItem> { it.date }.thenBy { it.time }) }
     val birthdayCount = remember(reminders) { reminders.count { it.category == "Birthdays" && !it.done } }
@@ -419,7 +425,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun ProfileScreen(english: Boolean) {
+@Composable private fun ProfileScreen(context: Context, english: Boolean) {
+    val storeProfile = remember { context.getSharedPreferences("reminder_store_profile", Context.MODE_PRIVATE) }
+    val displayName = storeProfile.getString("display_name", null)
+    val username = storeProfile.getString("username", null)
+    val role = storeProfile.getString("role", null)
     Column(Modifier.fillMaxSize().background(JournalPaper).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text(s("PROFILE", "پروفایل", english), color = Mint, fontSize = 10.sp, letterSpacing = 1.6.sp, fontWeight = FontWeight.Bold)
         Text(s("Your account", "حساب کاربری", english), color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
@@ -429,9 +439,9 @@ class MainActivity : ComponentActivity() {
                     Icon(Icons.Rounded.Person, null, tint = Mint, modifier = Modifier.size(29.dp))
                 }
                 Column(Modifier.padding(start = 13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text(s("Reminder user", "کاربر یادآور", english), color = JournalInk, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text(s("Personal workspace", "فضای شخصی", english), color = Muted, fontSize = 11.sp)
-                    Text(s("LOCAL PROFILE", "حساب محلی", english), color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Text(displayName ?: s("Reminder user", "کاربر یادآور", english), color = JournalInk, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(if (!username.isNullOrBlank()) "@$username" else s("Personal workspace", "فضای شخصی", english), color = Muted, fontSize = 11.sp)
+                    Text(if (role == "manager") s("STORE MANAGER", "مدیر فروشگاه", english) else if (role == "staff") s("STORE STAFF", "پرسنل فروشگاه", english) else s("LOCAL PROFILE", "حساب محلی", english), color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 }
             }
         }
@@ -444,7 +454,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        Text(s("Account details for Store access appear here after a Store account is connected.", "پس از اتصال حساب فروشگاه، اطلاعات حساب اینجا نمایش داده می‌شود.", english), color = Muted, fontSize = 11.sp)
+        Text(if (displayName != null) s("Store account information is synced from your active Store session.", "اطلاعات حساب فروشگاه از نشست فعال شما دریافت می‌شود.", english) else s("Connect your Store account to display your name and role here.", "برای نمایش نام و نقش، وارد حساب فروشگاه شوید.", english), color = Muted, fontSize = 11.sp)
     }
 }
 
@@ -622,10 +632,10 @@ class MainActivity : ComponentActivity() {
         Triple("Personal", Icons.Rounded.PersonOutline, 1),
         Triple("Home", Icons.Rounded.Home, 0),
         Triple("Settings", Icons.Rounded.Settings, 7),
-        Triple("Profile", Icons.Rounded.PersonOutline, 6)
+        Triple("Profile", Icons.Rounded.AccountCircle, 6)
     )
     Surface(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 13.dp, vertical = 8.dp),
         shape = RoundedCornerShape(28.dp), color = Color(0xFF252936),
         shadowElevation = 15.dp, border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = .055f))
     ) {
@@ -659,7 +669,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun ReminderDialog(initialCategory: String, english: Boolean, onDismiss: () -> Unit, onSave: (String, String, String, String) -> Unit) {
-    var title by remember { mutableStateOf("") }; var date by remember { mutableStateOf("1405/09/01") }; var time by remember { mutableStateOf("09:00") }; var category by remember { mutableStateOf(initialCategory) }; var picker by remember { mutableStateOf(0) }
+    var title by remember { mutableStateOf("") }; var date by remember { mutableStateOf(todayJalali()) }; var time by remember { mutableStateOf("09:00") }; var category by remember { mutableStateOf(initialCategory) }; var picker by remember { mutableStateOf(0) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(s("New reminder", "یادآور جدید", english), fontWeight = FontWeight.Bold) }, text = { Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         OutlinedTextField(title, { title = it }, label = { Text(s("Title", "عنوان یادآور", english)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedButton(onClick = { picker = 1 }, modifier = Modifier.fillMaxWidth()) { Icon(Icons.Rounded.CalendarMonth, null); Spacer(Modifier.width(8.dp)); Text("$date") }
@@ -682,7 +692,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable private fun BatchDialog(initialBarcode: String, categories: List<String>, english: Boolean, onScan: () -> Unit, onDismiss: () -> Unit, onSave: (String, String, Int, String, String) -> Unit) {
-    var product by remember { mutableStateOf("") }; var code by remember { mutableStateOf(initialBarcode) }; var qty by remember { mutableStateOf("1") }; var expiry by remember { mutableStateOf("1405/09/01") }; var category by remember { mutableStateOf(categories.firstOrNull() ?: "General") }; var newCategory by remember { mutableStateOf("") }; var picker by remember { mutableStateOf(false) }
+    var product by remember { mutableStateOf("") }; var code by remember { mutableStateOf(initialBarcode) }; var qty by remember { mutableStateOf("1") }; var expiry by remember { mutableStateOf(todayJalali()) }; var category by remember { mutableStateOf(categories.firstOrNull() ?: "General") }; var newCategory by remember { mutableStateOf("") }; var picker by remember { mutableStateOf(false) }
     AlertDialog(onDismissRequest = onDismiss, title = { Text(s("Add product batch", "ثبت سری محصول", english), fontWeight = FontWeight.Bold) }, text = { Column(verticalArrangement = Arrangement.spacedBy(9.dp)) {
         OutlinedTextField(product, { product = it }, label = { Text(s("Product name", "نام محصول", english)) }, singleLine = true, modifier = Modifier.fillMaxWidth())
         OutlinedTextField(code, { code = it }, label = { Text(s("Barcode (optional)", "بارکد (اختیاری)", english)) }, singleLine = true, trailingIcon = { IconButton(onClick = onScan) { Icon(Icons.Rounded.QrCodeScanner, s("Scan barcode", "اسکن بارکد", english), tint = Lilac) } })
@@ -703,11 +713,33 @@ private fun saveBatches(p: android.content.SharedPreferences, list: List<BatchIt
 private fun loadBatches(p: android.content.SharedPreferences): List<BatchItem> = try { val a=JSONArray(p.getString("batches","[]")); (0 until a.length()).map { val o=a.getJSONObject(it); BatchItem(o.optString("id"),o.optString("product"),o.optString("barcode"),o.optInt("quantity"),o.optString("expiry"),o.optString("category","General")) } } catch (_:Exception) { emptyList() }
 private fun saveCategories(p: android.content.SharedPreferences, list: List<String>) { p.edit().putString("product_categories", JSONArray(list).toString()).apply() }
 private fun loadCategories(p: android.content.SharedPreferences): List<String> = try { val a=JSONArray(p.getString("product_categories","[]")); (0 until a.length()).map { a.getString(it) } } catch (_:Exception) { emptyList() }
-private fun validJalali(s:String):Boolean { val p=s.split('/'); if(p.size!=3)return false; val y=p[0].toIntOrNull()?:return false; val m=p[1].toIntOrNull()?:return false; val d=p[2].toIntOrNull()?:return false; return y in 1300..1500 && m in 1..12 && d in 1..if(m<=6)31 else if(m<=11)30 else 30 }
+private fun todayJalali(): String { val calendar = PersianCalendar(); return "%04d/%02d/%02d".format(calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH) + 1, calendar.get(Calendar.DATE)) }
+private fun validJalali(s:String):Boolean {
+    val p=s.split('/'); if(p.size!=3)return false
+    val y=p[0].toIntOrNull()?:return false; val m=p[1].toIntOrNull()?:return false; val d=p[2].toIntOrNull()?:return false
+    if (y !in 1300..1500 || m !in 1..12) return false
+    val maxDay = when { m <= 6 -> 31; m <= 11 -> 30; else -> {
+        val start = jalaliToGregorian(y, 1, 1); val next = jalaliToGregorian(y + 1, 1, 1)
+        val days = ChronoUnit.DAYS.between(LocalDate.of(start[0], start[1], start[2]), LocalDate.of(next[0], next[1], next[2]))
+        if (days == 366L) 30 else 29
+    } }
+    return d in 1..maxDay
+}
 private fun daysUntil(j:String):Int = try { val p=j.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val target=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],0,0,0);set(Calendar.MILLISECOND,0) }; val today=Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY,0);set(Calendar.MINUTE,0);set(Calendar.SECOND,0);set(Calendar.MILLISECOND,0) }; ((target.timeInMillis-today.timeInMillis)/86400000L).toInt() } catch (_:Exception) { 9999 }
 private fun jalaliToGregorian(jy:Int,jm:Int,jd:Int):IntArray { var year=jy+1595; var days=-355668+365*year+(year/33)*8+(year%33+3)/4+jd+(if(jm<7)(jm-1)*31 else (jm-7)*30+186); var gy=400*(days/146097); days%=146097; if(days>36524){gy+=100*((--days)/36524);days%=36524;if(days>=365)days++}; gy+=4*(days/1461); days%=1461; if(days>365){gy+=(days-1)/365;days=(days-1)%365}; var gd=days+1; val leap=(gy%4==0&&gy%100!=0)||gy%400==0; val md=intArrayOf(31,if(leap)29 else 28,31,30,31,30,31,31,30,31,30,31); var gm=0; while(gm<12&&gd>md[gm]){gd-=md[gm];gm++}; return intArrayOf(gy,gm+1,gd) }
+private fun cancelReminder(c:Context,i:ReminderItem) { cancelAlarm(c, i.id.hashCode()) }
+private fun cancelExpiry(c:Context, item:BatchItem) { val base = item.id.hashCode(); cancelAlarm(c, base - 7); cancelAlarm(c, base - 1); cancelAlarm(c, base); val legacy = item.product.hashCode() + item.expiry.hashCode(); cancelAlarm(c, legacy - 7); cancelAlarm(c, legacy - 1); cancelAlarm(c, legacy) }
+private fun cancelAlarm(c:Context,id:Int) { val intent = Intent(c, ReminderReceiver::class.java); val pi = PendingIntent.getBroadcast(c,id,intent,PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE) ?: return; (c.getSystemService(Context.ALARM_SERVICE) as AlarmManager).cancel(pi); pi.cancel() }
 private fun scheduleReminder(c:Context,i:ReminderItem) { try { val p=i.date.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val t=i.time.split(':'); val cal=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],t[0].toInt(),t[1].toInt(),0);set(Calendar.MILLISECOND,0) }; schedule(c,i.id.hashCode(),i.title,cal.timeInMillis) } catch (_:Exception) {} }
-private fun scheduleExpiry(c:Context,product:String,expiry:String) { try { val english=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE).getBoolean("english",true); val prefix=if(english) "Reminder" else "یادآور"; val p=expiry.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val cal=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],9,0,0);set(Calendar.MILLISECOND,0) }; val base=product.hashCode()+expiry.hashCode(); schedule(c,base-7,if(english) "$prefix: $product expires in 7 days" else "$prefix: تاریخ انقضای $product تا ۷ روز دیگر",cal.timeInMillis-7*86400000L); schedule(c,base-1,if(english) "$prefix: $product expires tomorrow" else "$prefix: تاریخ انقضای $product فرداست",cal.timeInMillis-86400000L); schedule(c,base,if(english) "Product expiry: $product" else "تاریخ انقضای محصول: $product",cal.timeInMillis) } catch (_:Exception) {} }
+private fun scheduleExpiry(c:Context,batchId:String,product:String,expiry:String) { try { val english=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE).getBoolean("english",true); val prefix=if(english) "Reminder" else "یادآور"; val p=expiry.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val cal=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],9,0,0);set(Calendar.MILLISECOND,0) }; val base=batchId.hashCode(); schedule(c,base-7,if(english) "$prefix: $product expires in 7 days" else "$prefix: تاریخ انقضای $product تا ۷ روز دیگر",cal.timeInMillis-7*86400000L); schedule(c,base-1,if(english) "$prefix: $product expires tomorrow" else "$prefix: تاریخ انقضای $product فرداست",cal.timeInMillis-86400000L); schedule(c,base,if(english) "Product expiry: $product" else "تاریخ انقضای محصول: $product",cal.timeInMillis) } catch (_:Exception) {} }
 private fun schedule(c:Context,id:Int,title:String,at:Long) { if(at<System.currentTimeMillis())return; val i=Intent(c,ReminderReceiver::class.java).putExtra("title",title); val pi=PendingIntent.getBroadcast(c,id,i,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE); val am=c.getSystemService(Context.ALARM_SERVICE) as AlarmManager; if(Build.VERSION.SDK_INT>=31&&!am.canScheduleExactAlarms())am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,pi) else am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,pi) }
-class ReminderReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){val title=i.getStringExtra("title")?:"Reminder";val english=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE).getBoolean("english",true); val n=NotificationCompat.Builder(c,"reminders").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(if(english) "Reminder" else "یادآور").setContentText(title).setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true).build();val m=c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager;if(Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)m.notify(title.hashCode(),n)}}
-class BootReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){if(i.action==Intent.ACTION_BOOT_COMPLETED){val p=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE);loadReminders(p).filter{!it.done}.forEach{scheduleReminder(c,it)};loadBatches(p).forEach{scheduleExpiry(c,it.product,it.expiry)}}}}
+class ReminderReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){
+    val title=i.getStringExtra("title")?:"Reminder"
+    val english=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE).getBoolean("english",true)
+    val openApp=Intent(c,MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+    val content=PendingIntent.getActivity(c,title.hashCode(),openApp,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    val n=NotificationCompat.Builder(c,"reminders").setSmallIcon(R.mipmap.ic_launcher).setContentTitle(if(english) "Reminder" else "یادآور").setContentText(title).setContentIntent(content).setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true).build()
+    val m=c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+    if(Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)m.notify(title.hashCode(),n)
+}}
+class BootReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){if(i.action==Intent.ACTION_BOOT_COMPLETED){val p=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE);loadReminders(p).filter{!it.done}.forEach{scheduleReminder(c,it)};loadBatches(p).forEach{scheduleExpiry(c,it.id,it.product,it.expiry)}}}}
