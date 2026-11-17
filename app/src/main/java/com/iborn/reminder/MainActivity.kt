@@ -39,6 +39,8 @@ import androidx.compose.material.icons.rounded.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
@@ -79,7 +81,8 @@ data class BatchItem(val id: String, val product: String, val barcode: String, v
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val channel = NotificationChannel("reminders", "Reminder alerts", NotificationManager.IMPORTANCE_HIGH)
+        val selectedEnglish = getSharedPreferences("reminder_local", Context.MODE_PRIVATE).getBoolean("english", true)
+        val channel = NotificationChannel("reminders", if (selectedEnglish) "Reminder alerts" else "اعلان‌های یادآور", NotificationManager.IMPORTANCE_HIGH)
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         if (Build.VERSION.SDK_INT >= 33 && ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 44)
         setContent { ReminderApp(this) }
@@ -89,8 +92,7 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun ReminderApp(context: Context) {
     val prefs = remember { context.getSharedPreferences("reminder_local", Context.MODE_PRIVATE) }
-    val english = true
-    LaunchedEffect(Unit) { prefs.edit().putBoolean("english", true).apply() }
+    var english by remember { mutableStateOf(prefs.getBoolean("english", true)) }
     var tab by remember { mutableIntStateOf(0) }
     var reminders by remember { mutableStateOf(loadReminders(prefs)) }
     var batches by remember { mutableStateOf(loadBatches(prefs)) }
@@ -108,6 +110,7 @@ class MainActivity : ComponentActivity() {
     var barcode by remember { mutableStateOf("") }
     val scanner = remember { GmsBarcodeScanning.getClient(context) }
     val colors = darkColorScheme(primary = Mint, secondary = Mint, background = JournalPaper, surface = JournalCard, surfaceVariant = CardDarkAlt, onBackground = JournalInk, onSurface = JournalInk)
+    CompositionLocalProvider(LocalLayoutDirection provides if (english) LayoutDirection.Ltr else LayoutDirection.Rtl) {
     MaterialTheme(colorScheme = colors) {
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
@@ -120,7 +123,7 @@ class MainActivity : ComponentActivity() {
             }
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                if (tab == 0) Header { tab = 1 }
+                if (tab == 0) Header(english) { tab = 1 }
                 AnimatedContent(targetState = tab, transitionSpec = { (fadeIn(tween(230)) + slideInHorizontally(tween(230)) { it / 18 }) togetherWith (fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { -it / 22 }) }, label = "tab-transition") { page ->
                     when (page) {
                         0 -> HomeScreen(reminders, batches, storeOverview, english, { tab = 1 }, { tab = 5 }, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) })
@@ -128,7 +131,7 @@ class MainActivity : ComponentActivity() {
                         2 -> ReminderList(reminders.filter { it.category == "Daily" }, english, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
                         3 -> SimpleCategory(s("Installments", "اقساط", english), s("Payments and due dates", "پرداخت‌ها و سررسیدها", english), reminders.filter { it.category == "Installments" }, english, { reminderCategory = "Installments"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
                         4 -> SimpleCategory(s("Birthdays", "تولدها", english), s("Important dates", "تاریخ‌های مهم", english), reminders.filter { it.category == "Birthdays" }, english, { reminderCategory = "Birthdays"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        5 -> StorePortal(context) { overview ->
+                        5 -> StorePortal(context, english) { overview ->
                             storeOverview = overview
                             prefs.edit()
                                 .putInt("store_task_count", overview.taskCount)
@@ -139,8 +142,13 @@ class MainActivity : ComponentActivity() {
                                 .putString("store_role", overview.role)
                                 .apply()
                         }
-                        6 -> ProfileScreen()
-                        7 -> SettingsScreen()
+                        6 -> ProfileScreen(english)
+                        7 -> SettingsScreen(english) { selected ->
+                            english = selected
+                            prefs.edit().putBoolean("english", selected).apply()
+                            val channelName = if (selected) "Reminder alerts" else "اعلان‌های یادآور"
+                            context.getSystemService(NotificationManager::class.java).createNotificationChannel(NotificationChannel("reminders", channelName, NotificationManager.IMPORTANCE_HIGH))
+                        }
                         8 -> SimpleCategory(s("Miscellaneous", "متفرقه", english), s("Other reminders and notes", "یادآورها و یادداشت‌های دیگر", english), reminders.filter { it.category == "Miscellaneous" }, english, { reminderCategory = "Miscellaneous"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
                     }
                 }
@@ -154,17 +162,18 @@ class MainActivity : ComponentActivity() {
             batches = batches + BatchItem(UUID.randomUUID().toString(), product, code, qty, expiry, category); saveBatches(prefs, batches); scheduleExpiry(context, product, expiry); if (!productCategories.contains(category)) { productCategories = productCategories + category; saveCategories(prefs, productCategories) }; showBatch = false; barcode = ""
         })
     }
+    }
 }
 
-@Composable private fun Header(openPersonal: () -> Unit) {
+@Composable private fun Header(english: Boolean, openPersonal: () -> Unit) {
     val today = remember { SimpleDateFormat("EEEE, MMM dd", Locale.ENGLISH).format(Calendar.getInstance().time) }
     Row(
         Modifier.fillMaxWidth().background(JournalPaper).padding(horizontal = 21.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text("Good day.", color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
-            Text(today, color = Muted, fontSize = 12.sp)
+            Text(s("Good day.", "روز خوبی داشته باشی.", english), color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
+            Text(if (english) today else SimpleDateFormat("yyyy/MM/dd", Locale("fa", "IR")).format(Calendar.getInstance().time), color = Muted, fontSize = 12.sp)
         }
         Surface(shape = RoundedCornerShape(16.dp), color = JournalCard, modifier = Modifier.size(46.dp).border(1.dp, Color.White.copy(alpha = .05f), RoundedCornerShape(16.dp)).clickable { openPersonal() }) {
             Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.GridView, "Personal collections", tint = JournalInk, modifier = Modifier.size(21.dp)) }
@@ -186,30 +195,30 @@ class MainActivity : ComponentActivity() {
     ) {
         item {
             Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                Text("PERSONAL SPACE", color = Mint, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.7.sp)
-                Text("Your life, in order.", color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.6).sp)
-                Text("Private reminders and important dates, saved on this device.", color = Muted, fontSize = 12.sp)
+                Text(s("PERSONAL SPACE", "فضای شخصی", english), color = Mint, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.7.sp)
+                Text(s("Your life, in order.", "زندگی‌ات، مرتب و منظم.", english), color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.6).sp)
+                Text(s("Private reminders and important dates, saved on this device.", "یادآورها و تاریخ‌های مهمت، فقط روی همین دستگاه ذخیره می‌شوند.", english), color = Muted, fontSize = 12.sp)
             }
         }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
-                PersonalMetric("$pending", "TO DO", Icons.Rounded.NotificationsNone, Modifier.weight(1f))
-                PersonalMetric("$completed", "COMPLETED", Icons.Rounded.CheckCircleOutline, Modifier.weight(1f))
-                PersonalMetric("$expiring", "EXPIRING", Icons.Rounded.Inventory2, Modifier.weight(1f))
+                PersonalMetric("$pending", "TO DO", Icons.Rounded.NotificationsNone, Modifier.weight(1f), english)
+                PersonalMetric("$completed", "COMPLETED", Icons.Rounded.CheckCircleOutline, Modifier.weight(1f), english)
+                PersonalMetric("$expiring", "EXPIRING", Icons.Rounded.Inventory2, Modifier.weight(1f), english)
             }
         }
-        item { Text("YOUR COLLECTIONS", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, modifier = Modifier.padding(top = 3.dp)) }
-        item { PersonalCategoryCard("Daily reminders", "Tasks, plans and everyday notes", reminders.count { it.category == "Daily" && !it.done }, Icons.Rounded.Event, Mint, openDaily) }
-        item { PersonalCategoryCard("Installments", "Payments and upcoming due dates", reminders.count { it.category == "Installments" && !it.done }, Icons.Rounded.Event, Color(0xFF9DABFF), openInstallments) }
-        item { PersonalCategoryCard("Birthdays", "People and dates worth remembering", reminders.count { it.category == "Birthdays" && !it.done }, Icons.Rounded.Cake, Color(0xFFFFB5C8), openBirthdays) }
-        item { PersonalCategoryCard("Miscellaneous", "Everything else you want to keep close", reminders.count { it.category == "Miscellaneous" && !it.done }, Icons.Rounded.EditNote, Color(0xFFFFC58A), openMisc) }
+        item { Text(s("YOUR COLLECTIONS", "دسته‌بندی‌های شما", english), color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, modifier = Modifier.padding(top = 3.dp)) }
+        item { PersonalCategoryCard("Daily reminders", "Tasks, plans and everyday notes", reminders.count { it.category == "Daily" && !it.done }, Icons.Rounded.Event, Mint, openDaily, english) }
+        item { PersonalCategoryCard("Installments", "Payments and upcoming due dates", reminders.count { it.category == "Installments" && !it.done }, Icons.Rounded.Event, Color(0xFF9DABFF), openInstallments, english) }
+        item { PersonalCategoryCard("Birthdays", "People and dates worth remembering", reminders.count { it.category == "Birthdays" && !it.done }, Icons.Rounded.Cake, Color(0xFFFFB5C8), openBirthdays, english) }
+        item { PersonalCategoryCard("Miscellaneous", "Everything else you want to keep close", reminders.count { it.category == "Miscellaneous" && !it.done }, Icons.Rounded.EditNote, Color(0xFFFFC58A), openMisc, english) }
         item {
             Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth()) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Rounded.Lock, null, tint = Mint, modifier = Modifier.size(20.dp))
                     Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("Private by design", color = JournalInk, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
-                        Text("Personal data stays on this device and is not sent to the Store server.", color = Muted, fontSize = 10.sp)
+                        Text(s("Private by design", "حریم خصوصی از ابتدا", english), color = JournalInk, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text(s("Personal data stays on this device and is not sent to the Store server.", "اطلاعات شخصی روی همین دستگاه می‌ماند و به سرور فروشگاه ارسال نمی‌شود.", english), color = Muted, fontSize = 10.sp)
                     }
                 }
             }
@@ -217,25 +226,25 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun PersonalMetric(value: String, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
+@Composable private fun PersonalMetric(value: String, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier, english: Boolean) {
     Surface(modifier, shape = RoundedCornerShape(19.dp), color = JournalCard) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Icon(icon, null, tint = Mint, modifier = Modifier.size(18.dp))
             Text(value, color = JournalInk, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-            Text(label, color = Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp, maxLines = 1)
+            Text(s(label, when(label) { "TO DO" -> "در انتظار"; "COMPLETED" -> "انجام‌شده"; else -> "نزدیک انقضا" }, english), color = Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp, maxLines = 1)
         }
     }
 }
 
-@Composable private fun PersonalCategoryCard(title: String, detail: String, count: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, accent: Color, onClick: () -> Unit) {
+@Composable private fun PersonalCategoryCard(title: String, detail: String, count: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, accent: Color, onClick: () -> Unit, english: Boolean) {
     Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth().clickable { onClick() }) {
         Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(47.dp).background(accent.copy(alpha = .13f), RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
                 Icon(icon, null, tint = accent, modifier = Modifier.size(22.dp))
             }
             Column(Modifier.weight(1f).padding(horizontal = 13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(title, color = JournalInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
-                Text(detail, color = Muted, fontSize = 10.sp, maxLines = 2)
+                Text(s(title, when(title) { "Daily reminders" -> "یادآورهای روزانه"; "Installments" -> "اقساط"; "Birthdays" -> "تولدها"; else -> "متفرقه" }, english), color = JournalInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(s(detail, when(title) { "Daily reminders" -> "کارها، برنامه‌ها و یادداشت‌های روزمره"; "Installments" -> "پرداخت‌ها و سررسیدهای پیش‌رو"; "Birthdays" -> "افراد و تاریخ‌های مهم"; else -> "هر چیز دیگری که می‌خواهی نگه داری" }, english), color = Muted, fontSize = 10.sp, maxLines = 2)
             }
             Surface(shape = RoundedCornerShape(12.dp), color = accent.copy(alpha = .12f)) {
                 Text(count.toString(), color = accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp))
@@ -280,19 +289,19 @@ class MainActivity : ComponentActivity() {
                 Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Color(0xFF8BFFE0), Color(0xFF61D9BB), Color(0xFF4BC7AC))), RoundedCornerShape(29.dp)).padding(21.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("TODAY AT A GLANCE", color = Color(0xFF153C36), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
-                            Text(task?.title ?: "Your day is wide open", color = Color(0xFF102B27), fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-                            Text(task?.let { "${it.date} · ${it.time}" } ?: "Add a reminder and make it count", color = Color(0xFF315C53), fontSize = 11.sp)
+                            Text(s("TODAY AT A GLANCE", "نمای کلی امروز", english), color = Color(0xFF153C36), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
+                            Text(task?.title ?: s("Your day is wide open", "امروز برای برنامه‌ریزی آماده است", english), color = Color(0xFF102B27), fontSize = 22.sp, fontWeight = FontWeight.Bold, maxLines = 2)
+                            Text(task?.let { "${it.date} · ${it.time}" } ?: s("Add a reminder and make it count", "یک یادآور اضافه کن و روزت را بساز", english), color = Color(0xFF315C53), fontSize = 11.sp)
                         }
                         Box(Modifier.size(66.dp).background(Color(0xFF5DE6C0), CircleShape), contentAlignment = Alignment.Center) {
                             Text("$completion%", color = Color(0xFF102B27), fontSize = 19.sp, fontWeight = FontWeight.ExtraBold)
                         }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MintStat("${total - doneCount}", "PENDING", Modifier.weight(1f))
-                        MintStat("$doneCount", "DONE", Modifier.weight(1f))
-                        MintStat("$expiringCount", "PERSONAL EXPIRY", Modifier.weight(1f))
-                        MintStat("${storeOverview.taskCount}", "STORE TASKS", Modifier.weight(1f))
+                        MintStat("${total - doneCount}", "PENDING", Modifier.weight(1f), english)
+                        MintStat("$doneCount", "DONE", Modifier.weight(1f), english)
+                        MintStat("$expiringCount", "PERSONAL EXPIRY", Modifier.weight(1f), english)
+                        MintStat("${storeOverview.taskCount}", "STORE TASKS", Modifier.weight(1f), english)
                     }
                 }
             }
@@ -303,7 +312,7 @@ class MainActivity : ComponentActivity() {
                     val active = filter == value
                     Surface(shape = RoundedCornerShape(30.dp), color = if (active) Mint else JournalCard,
                         modifier = Modifier.weight(1f).clickable { filter = value }) {
-                        Text(value, modifier = Modifier.padding(horizontal = 5.dp, vertical = 11.dp), textAlign = TextAlign.Center,
+                        Text(s(value, when(value) { "All tasks" -> "همه وظایف"; "Work" -> "کاری"; "Personal" -> "شخصی"; else -> "تولدها" }, english), modifier = Modifier.padding(horizontal = 5.dp, vertical = 11.dp), textAlign = TextAlign.Center,
                             color = if (active) Color(0xFF102B27) else Muted, fontSize = 10.sp,
                             fontWeight = if (active) FontWeight.Bold else FontWeight.Medium, maxLines = 1)
                     }
@@ -312,38 +321,38 @@ class MainActivity : ComponentActivity() {
         }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-                DarkTaskCard("NEAR EXPIRY", "$expiringCount", if (expiringCount == 1) "batch within 7 days" else "batches within 7 days", Icons.Rounded.Inventory2, expiringCount > 0, goExpiry, Modifier.weight(1f))
-                DarkTaskCard("WORK DEADLINE", work?.title ?: "All clear", work?.let { "${it.date} · ${it.time}" } ?: "No pending deadline", Icons.Rounded.Event, work != null, goReminders, Modifier.weight(1f))
+                DarkTaskCard("NEAR EXPIRY", "$expiringCount", if (expiringCount == 1) "batch within 7 days" else "batches within 7 days", Icons.Rounded.Inventory2, expiringCount > 0, goExpiry, Modifier.weight(1f), english)
+                DarkTaskCard("WORK DEADLINE", work?.title ?: s("All clear", "همه‌چیز مرتب است", english), work?.let { "${it.date} · ${it.time}" } ?: "No pending deadline", Icons.Rounded.Event, work != null, goReminders, Modifier.weight(1f), english)
             }
         }
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(11.dp)) {
-                DarkTaskCard("BIRTHDAYS", "$birthdayCount", "upcoming dates", Icons.Rounded.Cake, birthdayCount > 0, goReminders, Modifier.weight(1f))
-                DarkTaskCard("QUICK NOTE", "Capture an idea", "Add a personal reminder", Icons.Rounded.EditNote, false, add, Modifier.weight(1f))
+                DarkTaskCard("BIRTHDAYS", "$birthdayCount", "upcoming dates", Icons.Rounded.Cake, birthdayCount > 0, goReminders, Modifier.weight(1f), english)
+                DarkTaskCard("QUICK NOTE", "Capture an idea", "Add a personal reminder", Icons.Rounded.EditNote, false, add, Modifier.weight(1f), english)
             }
         }
         item {
             DarkTaskCard(
                 "STORE WORKSPACE",
-                if (storeOverview.role.isBlank()) "Connect your team account" else "${storeOverview.taskCount - storeOverview.doneCount} tasks pending",
-                if (storeOverview.role.isBlank()) "Tasks · shifts · products · expiry" else "${storeOverview.shiftCount} shifts · ${storeOverview.batchCount} batches · ${storeOverview.expiringCount} expiring soon",
-                Icons.Rounded.ShoppingBag, storeOverview.expiringCount > 0, goExpiry, Modifier.fillMaxWidth()
+                if (storeOverview.role.isBlank()) s("Connect your team account", "حساب تیم را متصل کن", english) else if (english) "${storeOverview.taskCount - storeOverview.doneCount} tasks pending" else "${storeOverview.taskCount - storeOverview.doneCount} وظیفه باقی‌مانده",
+                if (storeOverview.role.isBlank()) s("Tasks · shifts · products · expiry", "وظایف · شیفت‌ها · محصولات · انقضا", english) else if (english) "${storeOverview.shiftCount} shifts · ${storeOverview.batchCount} batches · ${storeOverview.expiringCount} expiring soon" else "${storeOverview.shiftCount} شیفت · ${storeOverview.batchCount} سری · ${storeOverview.expiringCount} مورد نزدیک انقضا",
+                Icons.Rounded.ShoppingBag, storeOverview.expiringCount > 0, goExpiry, Modifier.fillMaxWidth(), english
             )
         }
         item {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Your reminders", modifier = Modifier.weight(1f), color = JournalInk, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                Text("+ Add", color = Mint, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { add() })
+                Text(s("Your reminders", "یادآورهای شما", english), modifier = Modifier.weight(1f), color = JournalInk, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                Text(s("+ Add", "+ افزودن", english), color = Mint, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { add() })
             }
         }
-        if (visible.isEmpty()) item { Text("Nothing here yet. Add your first reminder.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp)) }
+        if (visible.isEmpty()) item { Text(s("Nothing here yet. Add your first reminder.", "هنوز چیزی اینجا نیست. اولین یادآورت را اضافه کن.", english), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp)) }
         else items(visible.take(6), key = { "dark-${it.id}" }) { item ->
             Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth().clickable { toggleTask(item) }) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.NotificationsNone, null, tint = Mint, modifier = Modifier.size(22.dp))
                     Column(Modifier.weight(1f).padding(horizontal = 11.dp)) {
                         Text(item.title, color = JournalInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                        Text("${item.date} · ${item.time}   •   ${categoryLabel(item.category, true)}", color = Muted, fontSize = 10.sp)
+                        Text("${item.date} · ${item.time}   •   ${categoryLabel(item.category, english)}", color = Muted, fontSize = 10.sp)
                     }
                     IconButton(onClick = { toggleTask(item) }) {
                         Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, null, tint = if (item.done) Mint else Muted, modifier = Modifier.size(23.dp))
@@ -354,14 +363,14 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun MintStat(value: String, label: String, modifier: Modifier = Modifier) {
+@Composable private fun MintStat(value: String, label: String, modifier: Modifier = Modifier, english: Boolean) {
     Column(modifier.background(Color(0xFF69EBC8), RoundedCornerShape(12.dp)).padding(vertical = 9.dp), horizontalAlignment = Alignment.CenterHorizontally) {
         Text(value, color = Color(0xFF102B27), fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
-        Text(label, color = Color(0xFF315C53), fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .5.sp)
+        Text(s(label, when(label) { "PENDING" -> "در انتظار"; "DONE" -> "انجام‌شده"; "PERSONAL EXPIRY" -> "انقضای شخصی"; else -> "وظایف فروشگاه" }, english), color = Color(0xFF315C53), fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .5.sp)
     }
 }
 
-@Composable private fun DarkTaskCard(title: String, value: String, detail: String, icon: androidx.compose.ui.graphics.vector.ImageVector, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+@Composable private fun DarkTaskCard(title: String, value: String, detail: String, icon: androidx.compose.ui.graphics.vector.ImageVector, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, english: Boolean) {
     val bg = if (active) Color(0xFF263D3A) else JournalCard
     val fg = JournalInk
     Surface(shape = RoundedCornerShape(22.dp), color = bg, modifier = modifier.heightIn(min = 146.dp).clickable { onClick() }) {
@@ -371,12 +380,12 @@ class MainActivity : ComponentActivity() {
                 Spacer(Modifier.weight(1f))
                 Icon(Icons.Rounded.NotificationsNone, null, tint = if (active) Mint else Muted, modifier = Modifier.size(17.dp))
             }
-            Text(title, color = if (active) Mint else Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp)
+            Text(s(title, when(title) { "NEAR EXPIRY" -> "نزدیک انقضا"; "WORK DEADLINE" -> "سررسید کاری"; "BIRTHDAYS" -> "تولدها"; "QUICK NOTE" -> "یادداشت سریع"; else -> "فضای کاری فروشگاه" }, english), color = if (active) Mint else Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp)
             Text(value, color = fg, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-            Text(detail, color = if (active) Mint else Muted, fontSize = 10.sp, maxLines = 2)
+            Text(s(detail, when(detail) { "batch within 7 days" -> "یک سری تا ۷ روز آینده"; "batches within 7 days" -> "سری‌ها تا ۷ روز آینده"; "All clear" -> "همه‌چیز مرتب است"; "No pending deadline" -> "سررسید معوقی نیست"; "upcoming dates" -> "تاریخ‌های پیش‌رو"; "Capture an idea" -> "ایده‌ای را ثبت کن"; "Add a personal reminder" -> "یک یادآور شخصی اضافه کن"; "Connect your team account" -> "حساب تیم را متصل کن"; s("Tasks · shifts · products · expiry", "وظایف · شیفت‌ها · محصولات · انقضا", english) -> "وظایف · شیفت‌ها · محصولات · انقضا"; else -> detail }, english), color = if (active) Mint else Muted, fontSize = 10.sp, maxLines = 2)
             Spacer(Modifier.weight(1f))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (active) "NEEDS ATTENTION" else "UP TO DATE", color = if (active) Mint else Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .5.sp)
+                Text(if (active) s("NEEDS ATTENTION", "نیازمند توجه", english) else s("UP TO DATE", "به‌روز", english), color = if (active) Mint else Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .5.sp)
                 Spacer(Modifier.weight(1f))
                 Icon(Icons.Rounded.ArrowOutward, null, tint = if (active) Mint else Muted, modifier = Modifier.size(15.dp))
             }
@@ -410,19 +419,19 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun ProfileScreen() {
+@Composable private fun ProfileScreen(english: Boolean) {
     Column(Modifier.fillMaxSize().background(JournalPaper).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Text("PROFILE", color = Mint, fontSize = 10.sp, letterSpacing = 1.6.sp, fontWeight = FontWeight.Bold)
-        Text("Your account", color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(s("PROFILE", "پروفایل", english), color = Mint, fontSize = 10.sp, letterSpacing = 1.6.sp, fontWeight = FontWeight.Bold)
+        Text(s("Your account", "حساب کاربری", english), color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
         JournalCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(58.dp).background(Color(0xFF203B37), CircleShape), contentAlignment = Alignment.Center) {
                     Icon(Icons.Rounded.Person, null, tint = Mint, modifier = Modifier.size(29.dp))
                 }
                 Column(Modifier.padding(start = 13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("Reminder user", color = JournalInk, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("Personal workspace", color = Muted, fontSize = 11.sp)
-                    Text("LOCAL PROFILE", color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
+                    Text(s("Reminder user", "کاربر یادآور", english), color = JournalInk, fontWeight = FontWeight.Bold, fontSize = 16.sp)
+                    Text(s("Personal workspace", "فضای شخصی", english), color = Muted, fontSize = 11.sp)
+                    Text(s("LOCAL PROFILE", "حساب محلی", english), color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 }
             }
         }
@@ -430,25 +439,49 @@ class MainActivity : ComponentActivity() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Rounded.Shield, null, tint = Mint)
                 Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Privacy", color = JournalInk, fontWeight = FontWeight.SemiBold)
-                    Text("Personal reminders stay on this device.", color = Muted, fontSize = 11.sp)
+                    Text(s("Privacy", "حریم خصوصی", english), color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text(s("Personal reminders stay on this device.", "یادآورهای شخصی روی همین دستگاه باقی می‌مانند.", english), color = Muted, fontSize = 11.sp)
                 }
             }
         }
-        Text("Account details for Store access appear here after a Store account is connected.", color = Muted, fontSize = 11.sp)
+        Text(s("Account details for Store access appear here after a Store account is connected.", "پس از اتصال حساب فروشگاه، اطلاعات حساب اینجا نمایش داده می‌شود.", english), color = Muted, fontSize = 11.sp)
     }
 }
 
-@Composable private fun SettingsScreen() {
+@Composable private fun SettingsScreen(english: Boolean, onLanguageChange: (Boolean) -> Unit) {
     Column(Modifier.fillMaxSize().background(JournalPaper).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        Text("SETTINGS", color = Mint, fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
-        Text("Make it yours.", color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text(s("SETTINGS", "تنظیمات", english), color = Mint, fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
+        Text(s("Make it yours.", "برنامه را مطابق سلیقه‌ات تنظیم کن.", english), color = JournalInk, fontSize = 25.sp, fontWeight = FontWeight.Bold)
+        JournalCard(Modifier.fillMaxWidth()) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Language, null, tint = Mint) }
+                    Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text(s("Language", "زبان برنامه", english), color = JournalInk, fontWeight = FontWeight.SemiBold)
+                        Text(s("Choose your preferred language", "زبان موردنظر خود را انتخاب کن", english), color = Muted, fontSize = 11.sp)
+                    }
+                }
+                Row(Modifier.fillMaxWidth().background(Color(0xFF20232C), RoundedCornerShape(14.dp)).padding(4.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    listOf(true to "English", false to "فارسی").forEach { (isEnglish, label) ->
+                        Surface(
+                            modifier = Modifier.weight(1f).clickable { onLanguageChange(isEnglish) },
+                            shape = RoundedCornerShape(11.dp),
+                            color = if (english == isEnglish) Mint else Color.Transparent
+                        ) {
+                            Text(label, modifier = Modifier.padding(vertical = 11.dp), textAlign = TextAlign.Center,
+                                color = if (english == isEnglish) Color(0xFF102B27) else JournalInk,
+                                fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        }
+                    }
+                }
+            }
+        }
         JournalCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.NotificationsActive, null, tint = Mint) }
                 Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Notifications", color = JournalInk, fontWeight = FontWeight.SemiBold)
-                    Text("Reminder alerts are handled by Android.", color = Muted, fontSize = 11.sp)
+                    Text(s("Notifications", "اعلان‌ها", english), color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text(s("Reminder alerts are handled by Android.", "اعلان یادآورها توسط اندروید مدیریت می‌شود.", english), color = Muted, fontSize = 11.sp)
                 }
                 Icon(Icons.Rounded.ChevronRight, null, tint = Muted)
             }
@@ -457,8 +490,8 @@ class MainActivity : ComponentActivity() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Storage, null, tint = Mint) }
                 Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Local storage", color = JournalInk, fontWeight = FontWeight.SemiBold)
-                    Text("Your personal data remains on this phone.", color = Muted, fontSize = 11.sp)
+                    Text(s("Local storage", "ذخیره‌سازی محلی", english), color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text(s("Your personal data remains on this phone.", "اطلاعات شخصی فقط روی همین گوشی ذخیره می‌شود.", english), color = Muted, fontSize = 11.sp)
                 }
                 Icon(Icons.Rounded.CheckCircle, null, tint = Mint)
             }
@@ -467,13 +500,13 @@ class MainActivity : ComponentActivity() {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Palette, null, tint = Mint) }
                 Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                    Text("Visual style", color = JournalInk, fontWeight = FontWeight.SemiBold)
-                    Text("Dark Slate · Mint", color = Muted, fontSize = 11.sp)
+                    Text(s("Visual style", "ظاهر برنامه", english), color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text(s("Dark Slate · Mint", "اسلیت تیره · نعنایی", english), color = Muted, fontSize = 11.sp)
                 }
-                Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF203B37)) { Text("ACTIVE", color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) }
+                Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF203B37)) { Text(s("ACTIVE", "فعال", english), color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) }
             }
         }
-        Text("Reminder 3.0 · Designed for focus", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 5.dp))
+        Text(s("Reminder 2.9 · Designed for focus", "یادآور ۲.۹ · طراحی‌شده برای تمرکز", english), color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 5.dp))
     }
 }
 
@@ -572,7 +605,7 @@ class MainActivity : ComponentActivity() {
 @Composable private fun ReminderRow(item: ReminderItem, english: Boolean, toggle: () -> Unit, delete: () -> Unit) {
     Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) { Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(12.dp), color = PaleLilac, modifier = Modifier.size(42.dp).clickable { toggle() }) { Box(contentAlignment = Alignment.Center) { Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.Notifications, null, tint = Lilac) } }; Column(Modifier.weight(1f).padding(horizontal = 11.dp)) { Text(item.title, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface); Text("${item.date}  •  ${item.time}  •  ${categoryLabel(item.category, english)}", color = Muted, fontSize = 10.sp) }; IconButton(onClick = delete) { Icon(Icons.Rounded.DeleteOutline, null, tint = Muted) } } }
 }
-@Composable private fun BatchRow(item: BatchItem, english: Boolean, delete: () -> Unit) { val days = daysUntil(item.expiry); val warning = days < 0 || days <= 7; Surface(shape = RoundedCornerShape(21.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) { Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(12.dp), color = if (warning) Color(0xFF35251F) else PaleLilac, modifier = Modifier.size(42.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Inventory2, null, tint = if (warning) Color(0xFFFF8A65) else Lilac) } }; Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text(item.product, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface); Text("${item.quantity} ${s("units", "عدد", english)}  •  ${item.expiry}", fontSize = 11.sp, color = Muted); if (item.barcode.isNotBlank()) Text("Barcode: ${item.barcode}", fontSize = 9.sp, color = Muted) }; Text(if (days < 0) s("Expired", "منقضی", english) else if (days == 0) s("Today", "امروز", english) else "$days ${s("days", "روز", english)}", color = if (warning) Color(0xFFFF8A65) else Lilac, fontWeight = FontWeight.Bold, fontSize = 10.sp); IconButton(onClick = delete) { Icon(Icons.Rounded.DeleteOutline, null, tint = Muted) } } } }
+@Composable private fun BatchRow(item: BatchItem, english: Boolean, delete: () -> Unit) { val days = daysUntil(item.expiry); val warning = days < 0 || days <= 7; Surface(shape = RoundedCornerShape(21.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) { Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(12.dp), color = if (warning) Color(0xFF35251F) else PaleLilac, modifier = Modifier.size(42.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Inventory2, null, tint = if (warning) Color(0xFFFF8A65) else Lilac) } }; Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text(item.product, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface); Text("${item.quantity} ${s("units", "عدد", english)}  •  ${item.expiry}", fontSize = 11.sp, color = Muted); if (item.barcode.isNotBlank()) Text("${s("Barcode:", "بارکد:", english)} ${item.barcode}", fontSize = 9.sp, color = Muted) }; Text(if (days < 0) s("Expired", "منقضی", english) else if (days == 0) s("Today", "امروز", english) else "$days ${s("days", "روز", english)}", color = if (warning) Color(0xFFFF8A65) else Lilac, fontWeight = FontWeight.Bold, fontSize = 10.sp); IconButton(onClick = delete) { Icon(Icons.Rounded.DeleteOutline, null, tint = Muted) } } } }
 
 @Composable private fun EmptyState(title: String, subtitle: String) { Column(Modifier.fillMaxWidth().padding(vertical = 35.dp), horizontalAlignment = Alignment.CenterHorizontally) { Surface(shape = CircleShape, color = PaleLilac, modifier = Modifier.size(62.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.AutoAwesome, null, tint = Lilac, modifier = Modifier.size(28.dp)) } }; Spacer(Modifier.height(12.dp)); Text(title, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground); Text(subtitle, color = Muted, fontSize = 11.sp, textAlign = TextAlign.Center) } }
 
@@ -616,7 +649,7 @@ class MainActivity : ComponentActivity() {
                         enter = fadeIn(tween(180)) + androidx.compose.animation.expandHorizontally(tween(180)),
                         exit = fadeOut(tween(110)) + androidx.compose.animation.shrinkHorizontally(tween(110))
                     ) {
-                        Text(item.first, color = Mint, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                        Text(s(item.first, when(item.first) { "Store" -> "فروشگاه"; "Personal" -> "شخصی"; "Home" -> "خانه"; "Settings" -> "تنظیمات"; else -> "پروفایل" }, english), color = Mint, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
                     }
                     Box(Modifier.size(width = if (active) 13.dp else 4.dp, height = 3.dp).background(if (active) Mint else Color.Transparent, RoundedCornerShape(50)))
                 }
@@ -674,7 +707,7 @@ private fun validJalali(s:String):Boolean { val p=s.split('/'); if(p.size!=3)ret
 private fun daysUntil(j:String):Int = try { val p=j.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val target=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],0,0,0);set(Calendar.MILLISECOND,0) }; val today=Calendar.getInstance().apply { set(Calendar.HOUR_OF_DAY,0);set(Calendar.MINUTE,0);set(Calendar.SECOND,0);set(Calendar.MILLISECOND,0) }; ((target.timeInMillis-today.timeInMillis)/86400000L).toInt() } catch (_:Exception) { 9999 }
 private fun jalaliToGregorian(jy:Int,jm:Int,jd:Int):IntArray { var year=jy+1595; var days=-355668+365*year+(year/33)*8+(year%33+3)/4+jd+(if(jm<7)(jm-1)*31 else (jm-7)*30+186); var gy=400*(days/146097); days%=146097; if(days>36524){gy+=100*((--days)/36524);days%=36524;if(days>=365)days++}; gy+=4*(days/1461); days%=1461; if(days>365){gy+=(days-1)/365;days=(days-1)%365}; var gd=days+1; val leap=(gy%4==0&&gy%100!=0)||gy%400==0; val md=intArrayOf(31,if(leap)29 else 28,31,30,31,30,31,31,30,31,30,31); var gm=0; while(gm<12&&gd>md[gm]){gd-=md[gm];gm++}; return intArrayOf(gy,gm+1,gd) }
 private fun scheduleReminder(c:Context,i:ReminderItem) { try { val p=i.date.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val t=i.time.split(':'); val cal=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],t[0].toInt(),t[1].toInt(),0);set(Calendar.MILLISECOND,0) }; schedule(c,i.id.hashCode(),i.title,cal.timeInMillis) } catch (_:Exception) {} }
-private fun scheduleExpiry(c:Context,product:String,expiry:String) { try { val p=expiry.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val cal=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],9,0,0);set(Calendar.MILLISECOND,0) }; val base=product.hashCode()+expiry.hashCode(); schedule(c,base-7,"Reminder: $product expires in 7 days",cal.timeInMillis-7*86400000L); schedule(c,base-1,"Reminder: $product expires tomorrow",cal.timeInMillis-86400000L); schedule(c,base,"Product expiry: $product",cal.timeInMillis) } catch (_:Exception) {} }
+private fun scheduleExpiry(c:Context,product:String,expiry:String) { try { val english=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE).getBoolean("english",true); val prefix=if(english) "Reminder" else "یادآور"; val p=expiry.split('/'); val g=jalaliToGregorian(p[0].toInt(),p[1].toInt(),p[2].toInt()); val cal=Calendar.getInstance().apply { set(g[0],g[1]-1,g[2],9,0,0);set(Calendar.MILLISECOND,0) }; val base=product.hashCode()+expiry.hashCode(); schedule(c,base-7,if(english) "$prefix: $product expires in 7 days" else "$prefix: تاریخ انقضای $product تا ۷ روز دیگر",cal.timeInMillis-7*86400000L); schedule(c,base-1,if(english) "$prefix: $product expires tomorrow" else "$prefix: تاریخ انقضای $product فرداست",cal.timeInMillis-86400000L); schedule(c,base,if(english) "Product expiry: $product" else "تاریخ انقضای محصول: $product",cal.timeInMillis) } catch (_:Exception) {} }
 private fun schedule(c:Context,id:Int,title:String,at:Long) { if(at<System.currentTimeMillis())return; val i=Intent(c,ReminderReceiver::class.java).putExtra("title",title); val pi=PendingIntent.getBroadcast(c,id,i,PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE); val am=c.getSystemService(Context.ALARM_SERVICE) as AlarmManager; if(Build.VERSION.SDK_INT>=31&&!am.canScheduleExactAlarms())am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,pi) else am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP,at,pi) }
-class ReminderReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){val title=i.getStringExtra("title")?:"Reminder";val n=NotificationCompat.Builder(c,"reminders").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle("Reminder").setContentText(title).setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true).build();val m=c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager;if(Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)m.notify(title.hashCode(),n)}}
+class ReminderReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){val title=i.getStringExtra("title")?:"Reminder";val english=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE).getBoolean("english",true); val n=NotificationCompat.Builder(c,"reminders").setSmallIcon(android.R.drawable.ic_dialog_info).setContentTitle(if(english) "Reminder" else "یادآور").setContentText(title).setPriority(NotificationCompat.PRIORITY_HIGH).setAutoCancel(true).build();val m=c.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager;if(Build.VERSION.SDK_INT<33||ContextCompat.checkSelfPermission(c,Manifest.permission.POST_NOTIFICATIONS)==PackageManager.PERMISSION_GRANTED)m.notify(title.hashCode(),n)}}
 class BootReceiver:BroadcastReceiver(){override fun onReceive(c:Context,i:Intent){if(i.action==Intent.ACTION_BOOT_COMPLETED){val p=c.getSharedPreferences("reminder_local",Context.MODE_PRIVATE);loadReminders(p).filter{!it.done}.forEach{scheduleReminder(c,it)};loadBatches(p).forEach{scheduleExpiry(c,it.product,it.expiry)}}}}
