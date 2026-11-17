@@ -57,7 +57,6 @@ import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Calendar
-import android.icu.util.PersianCalendar
 import java.time.LocalDate
 import java.time.temporal.ChronoUnit
 import java.text.SimpleDateFormat
@@ -713,7 +712,28 @@ private fun saveBatches(p: android.content.SharedPreferences, list: List<BatchIt
 private fun loadBatches(p: android.content.SharedPreferences): List<BatchItem> = try { val a=JSONArray(p.getString("batches","[]")); (0 until a.length()).map { val o=a.getJSONObject(it); BatchItem(o.optString("id"),o.optString("product"),o.optString("barcode"),o.optInt("quantity"),o.optString("expiry"),o.optString("category","General")) } } catch (_:Exception) { emptyList() }
 private fun saveCategories(p: android.content.SharedPreferences, list: List<String>) { p.edit().putString("product_categories", JSONArray(list).toString()).apply() }
 private fun loadCategories(p: android.content.SharedPreferences): List<String> = try { val a=JSONArray(p.getString("product_categories","[]")); (0 until a.length()).map { a.getString(it) } } catch (_:Exception) { emptyList() }
-private fun todayJalali(): String { val calendar = PersianCalendar(); return "%04d/%02d/%02d".format(calendar.get(Calendar.YEAR), calendar.get(Calendar.MONTH) + 1, calendar.get(Calendar.DATE)) }
+private fun todayJalali(): String {
+    val today = LocalDate.now()
+    var jalaliYear = today.year - 621
+    fun yearStart(year: Int): LocalDate {
+        val g = jalaliToGregorian(year, 1, 1)
+        return LocalDate.of(g[0], g[1], g[2])
+    }
+    while (today < yearStart(jalaliYear)) jalaliYear--
+    while (today >= yearStart(jalaliYear + 1)) jalaliYear++
+    val dayOfYear = ChronoUnit.DAYS.between(yearStart(jalaliYear), today).toInt()
+    val month: Int
+    val day: Int
+    if (dayOfYear < 186) {
+        month = dayOfYear / 31 + 1
+        day = dayOfYear % 31 + 1
+    } else {
+        val remainder = dayOfYear - 186
+        month = remainder / 30 + 7
+        day = remainder % 30 + 1
+    }
+    return "%04d/%02d/%02d".format(jalaliYear, month, day)
+}
 private fun validJalali(s:String):Boolean {
     val p=s.split('/'); if(p.size!=3)return false
     val y=p[0].toIntOrNull()?:return false; val m=p[1].toIntOrNull()?:return false; val d=p[2].toIntOrNull()?:return false
