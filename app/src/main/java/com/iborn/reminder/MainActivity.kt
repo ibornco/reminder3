@@ -75,7 +75,7 @@ private val JournalInk = Color(0xFFF4F6FA)
 private val JournalRed = Color(0xFF7DF9D5)
 private fun s(en: String, fa: String, english: Boolean) = if (english) en else fa
 
-data class ReminderItem(val id: String, val title: String, val date: String, val time: String, val category: String, val done: Boolean = false)
+data class ReminderItem(val id: String, val title: String, val date: String, val time: String, val category: String, val done: Boolean = false, val createdAt: Long = System.currentTimeMillis())
 data class BatchItem(val id: String, val product: String, val barcode: String, val quantity: Int, val expiry: String, val category: String)
 
 class MainActivity : ComponentActivity() {
@@ -346,7 +346,7 @@ class MainActivity : ComponentActivity() {
             }
         }
         if (visible.isEmpty()) item { Text(s("Nothing here yet. Add your first reminder.", "هنوز چیزی اینجا نیست. اولین یادآورت را اضافه کن.", english), color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp)) }
-        else items(visible.take(6), key = { "dark-${it.id}" }) { item ->
+        else items(visible.sortedByDescending { it.createdAt }, key = { "dark-${it.id}" }) { item ->
             Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth().clickable { toggleTask(item) }) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.NotificationsNone, null, tint = Mint, modifier = Modifier.size(22.dp))
@@ -697,8 +697,8 @@ class MainActivity : ComponentActivity() {
 }
 
 private fun categoryLabel(category: String, english: Boolean) = when (category) { "Daily" -> s("Daily", "روزانه", english); "Installments" -> s("Installments", "اقساط", english); "Birthdays" -> s("Birthdays", "تولدها", english); "Miscellaneous" -> s("Miscellaneous", "متفرقه", english); else -> category }
-private fun saveReminders(p: android.content.SharedPreferences, list: List<ReminderItem>) { val a=JSONArray(); list.forEach { a.put(JSONObject().put("id",it.id).put("title",it.title).put("date",it.date).put("time",it.time).put("category",it.category).put("done",it.done)) }; p.edit().putString("reminders",a.toString()).apply() }
-private fun loadReminders(p: android.content.SharedPreferences): List<ReminderItem> = try { val a=JSONArray(p.getString("reminders","[]")); (0 until a.length()).map { val o=a.getJSONObject(it); ReminderItem(o.optString("id"),o.optString("title"),o.optString("date"),o.optString("time"),o.optString("category"),o.optBoolean("done")) } } catch (_:Exception) { emptyList() }
+private fun saveReminders(p: android.content.SharedPreferences, list: List<ReminderItem>) { val a=JSONArray(); list.forEach { a.put(JSONObject().put("id",it.id).put("title",it.title).put("date",it.date).put("time",it.time).put("category",it.category).put("done",it.done).put("createdAt",it.createdAt)) }; p.edit().putString("reminders",a.toString()).apply() }
+private fun loadReminders(p: android.content.SharedPreferences): List<ReminderItem> = try { val a=JSONArray(p.getString("reminders","[]")); (0 until a.length()).map { val o=a.getJSONObject(it); ReminderItem(o.optString("id"),o.optString("title"),o.optString("date"),o.optString("time"),o.optString("category"),o.optBoolean("done"),o.optLong("createdAt", 0L)) } } catch (_:Exception) { emptyList() }
 private fun saveBatches(p: android.content.SharedPreferences, list: List<BatchItem>) { val a=JSONArray(); list.forEach { a.put(JSONObject().put("id",it.id).put("product",it.product).put("barcode",it.barcode).put("quantity",it.quantity).put("expiry",it.expiry).put("category",it.category)) }; p.edit().putString("batches",a.toString()).apply() }
 private fun loadBatches(p: android.content.SharedPreferences): List<BatchItem> = try { val a=JSONArray(p.getString("batches","[]")); (0 until a.length()).map { val o=a.getJSONObject(it); BatchItem(o.optString("id"),o.optString("product"),o.optString("barcode"),o.optInt("quantity"),o.optString("expiry"),o.optString("category","General")) } } catch (_:Exception) { emptyList() }
 private fun saveCategories(p: android.content.SharedPreferences, list: List<String>) { p.edit().putString("product_categories", JSONArray(list).toString()).apply() }
