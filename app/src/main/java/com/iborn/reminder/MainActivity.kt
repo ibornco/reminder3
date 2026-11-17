@@ -15,6 +15,8 @@ import android.widget.NumberPicker
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -39,6 +41,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -86,17 +89,19 @@ class MainActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun ReminderApp(context: Context) {
     val prefs = remember { context.getSharedPreferences("reminder_local", Context.MODE_PRIVATE) }
-    var dark by remember {
-        val needsDarkDefault = !prefs.getBoolean("journal_theme_migrated_v1", false)
-        if (needsDarkDefault) prefs.edit().putBoolean("dark", false).putBoolean("journal_theme_migrated_v1", true).apply()
-        mutableStateOf(prefs.getBoolean("dark", false))
-    }
     val english = true
     LaunchedEffect(Unit) { prefs.edit().putBoolean("english", true).apply() }
     var tab by remember { mutableIntStateOf(0) }
     var reminders by remember { mutableStateOf(loadReminders(prefs)) }
     var batches by remember { mutableStateOf(loadBatches(prefs)) }
     var productCategories by remember { mutableStateOf(loadCategories(prefs)) }
+    var storeOverview by remember {
+        mutableStateOf(StoreOverview(
+            prefs.getInt("store_task_count", 0), prefs.getInt("store_done_count", 0),
+            prefs.getInt("store_shift_count", 0), prefs.getInt("store_batch_count", 0),
+            prefs.getInt("store_expiring_count", 0), prefs.getString("store_role", "").orEmpty()
+        ))
+    }
     var showReminder by remember { mutableStateOf(false) }
     var showBatch by remember { mutableStateOf(false) }
     var reminderCategory by remember { mutableStateOf("Daily") }
@@ -108,30 +113,35 @@ class MainActivity : ComponentActivity() {
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = { BottomBar(tab, english) { tab = it } },
             floatingActionButton = {
-                if (tab in 1..4) FloatingActionButton(onClick = { if (tab == 5) showBatch = true else { reminderCategory = listOf("", "Daily", "Installments", "Birthdays", "Miscellaneous")[tab]; showReminder = true } }, containerColor = Lilac, contentColor = Color.White) { Icon(Icons.Rounded.Add, contentDescription = s("Add", "افزودن", english)) }
+                if (tab in setOf(2, 3, 4, 8)) FloatingActionButton(
+                    onClick = { reminderCategory = when (tab) { 2 -> "Daily"; 3 -> "Installments"; 4 -> "Birthdays"; else -> "Miscellaneous" }; showReminder = true },
+                    containerColor = Mint, contentColor = Color(0xFF102B27), shape = RoundedCornerShape(20.dp)
+                ) { Icon(Icons.Rounded.Add, contentDescription = s("Add", "افزودن", english)) }
             }
         ) { padding ->
             Column(Modifier.fillMaxSize().padding(padding)) {
-                Header(
-                    english,
-                    { tab = 1 },
-                    {
-                        val share = Intent(Intent.ACTION_SEND).apply {
-                            type = "text/plain"
-                            putExtra(Intent.EXTRA_TEXT, "Reminder — reminders and product expiry tracker")
-                        }
-                        context.startActivity(Intent.createChooser(share, s("Share Reminder", "اشتراک‌گذاری Reminder", english)))
-                    }
-                )
-                AnimatedContent(targetState = tab, transitionSpec = { (fadeIn(tween(170)) + slideInHorizontally(tween(170)) { it / 14 }) togetherWith (fadeOut(tween(120)) + slideOutHorizontally(tween(120)) { -it / 18 }) }, label = "tab-transition") { page ->
+                if (tab == 0) Header { tab = 1 }
+                AnimatedContent(targetState = tab, transitionSpec = { (fadeIn(tween(230)) + slideInHorizontally(tween(230)) { it / 18 }) togetherWith (fadeOut(tween(160)) + slideOutHorizontally(tween(160)) { -it / 22 }) }, label = "tab-transition") { page ->
                     when (page) {
-                        0 -> HomeScreen(reminders, batches, english, { tab = 1 }, { tab = 5 }, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) })
-                        1 -> ReminderList(reminders, english, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        2 -> SimpleCategory(s("Installments", "اقساط", english), s("Payments and due dates", "پرداخت‌ها و سررسیدها", english), reminders.filter { it.category == "Installments" }, english, { reminderCategory = "Installments"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        3 -> SimpleCategory(s("Birthdays", "تولدها", english), s("Important dates", "تاریخ‌های مهم", english), reminders.filter { it.category == "Birthdays" }, english, { reminderCategory = "Birthdays"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        4 -> SimpleCategory(s("Miscellaneous", "متفرقه", english), s("Other reminders and notes", "یادآورها و یادداشت‌های دیگر", english), reminders.filter { it.category == "Miscellaneous" }, english, { reminderCategory = "Miscellaneous"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
-                        5 -> StorePortal(context)
-                        else -> ProfileScreen(dark, { dark = it; prefs.edit().putBoolean("dark", it).apply() })
+                        0 -> HomeScreen(reminders, batches, storeOverview, english, { tab = 1 }, { tab = 5 }, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) })
+                        1 -> PersonalHubScreen(reminders, batches, english, { tab = 2 }, { tab = 3 }, { tab = 4 }, { tab = 8 })
+                        2 -> ReminderList(reminders.filter { it.category == "Daily" }, english, { reminderCategory = "Daily"; showReminder = true }, { item -> reminders = reminders.map { if (it.id == item.id) it.copy(done = !it.done) else it }; saveReminders(prefs, reminders) }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        3 -> SimpleCategory(s("Installments", "اقساط", english), s("Payments and due dates", "پرداخت‌ها و سررسیدها", english), reminders.filter { it.category == "Installments" }, english, { reminderCategory = "Installments"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        4 -> SimpleCategory(s("Birthdays", "تولدها", english), s("Important dates", "تاریخ‌های مهم", english), reminders.filter { it.category == "Birthdays" }, english, { reminderCategory = "Birthdays"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
+                        5 -> StorePortal(context) { overview ->
+                            storeOverview = overview
+                            prefs.edit()
+                                .putInt("store_task_count", overview.taskCount)
+                                .putInt("store_done_count", overview.doneCount)
+                                .putInt("store_shift_count", overview.shiftCount)
+                                .putInt("store_batch_count", overview.batchCount)
+                                .putInt("store_expiring_count", overview.expiringCount)
+                                .putString("store_role", overview.role)
+                                .apply()
+                        }
+                        6 -> ProfileScreen()
+                        7 -> SettingsScreen()
+                        8 -> SimpleCategory(s("Miscellaneous", "متفرقه", english), s("Other reminders and notes", "یادآورها و یادداشت‌های دیگر", english), reminders.filter { it.category == "Miscellaneous" }, english, { reminderCategory = "Miscellaneous"; showReminder = true }, { item -> reminders = reminders.filterNot { it.id == item.id }; saveReminders(prefs, reminders) })
                     }
                 }
             }
@@ -146,22 +156,91 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun Header(
-    english: Boolean,
-    openCalendar: () -> Unit,
-    shareApp: () -> Unit
-) {
+@Composable private fun Header(openPersonal: () -> Unit) {
     val today = remember { SimpleDateFormat("EEEE, MMM dd", Locale.ENGLISH).format(Calendar.getInstance().time) }
     Row(
-        Modifier.fillMaxWidth().background(JournalPaper).padding(horizontal = 20.dp, vertical = 12.dp),
+        Modifier.fillMaxWidth().background(JournalPaper).padding(horizontal = 21.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-            Text("Hey, there!", color = JournalInk, fontSize = 23.sp, fontWeight = FontWeight.Bold)
+            Text("Good day.", color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-0.5).sp)
             Text(today, color = Muted, fontSize = 12.sp)
         }
-        Surface(shape = RoundedCornerShape(13.dp), color = JournalCard, modifier = Modifier.size(42.dp).clickable { openCalendar() }) {
-            Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.GridView, "Menu", tint = JournalInk, modifier = Modifier.size(21.dp)) }
+        Surface(shape = RoundedCornerShape(16.dp), color = JournalCard, modifier = Modifier.size(46.dp).border(1.dp, Color.White.copy(alpha = .05f), RoundedCornerShape(16.dp)).clickable { openPersonal() }) {
+            Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.GridView, "Personal collections", tint = JournalInk, modifier = Modifier.size(21.dp)) }
+        }
+    }
+}
+
+@Composable private fun PersonalHubScreen(
+    reminders: List<ReminderItem>, batches: List<BatchItem>, english: Boolean,
+    openDaily: () -> Unit, openInstallments: () -> Unit, openBirthdays: () -> Unit, openMisc: () -> Unit
+) {
+    val pending = reminders.count { !it.done }
+    val completed = reminders.count { it.done }
+    val expiring = batches.count { daysUntil(it.expiry) in 0..7 }
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().background(JournalPaper).padding(horizontal = 19.dp),
+        contentPadding = PaddingValues(top = 12.dp, bottom = 28.dp),
+        verticalArrangement = Arrangement.spacedBy(15.dp)
+    ) {
+        item {
+            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                Text("PERSONAL SPACE", color = Mint, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.7.sp)
+                Text("Your life, in order.", color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold, letterSpacing = (-.6).sp)
+                Text("Private reminders and important dates, saved on this device.", color = Muted, fontSize = 12.sp)
+            }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(9.dp)) {
+                PersonalMetric("$pending", "TO DO", Icons.Rounded.NotificationsNone, Modifier.weight(1f))
+                PersonalMetric("$completed", "COMPLETED", Icons.Rounded.CheckCircleOutline, Modifier.weight(1f))
+                PersonalMetric("$expiring", "EXPIRING", Icons.Rounded.Inventory2, Modifier.weight(1f))
+            }
+        }
+        item { Text("YOUR COLLECTIONS", color = Muted, fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.4.sp, modifier = Modifier.padding(top = 3.dp)) }
+        item { PersonalCategoryCard("Daily reminders", "Tasks, plans and everyday notes", reminders.count { it.category == "Daily" && !it.done }, Icons.Rounded.Event, Mint, openDaily) }
+        item { PersonalCategoryCard("Installments", "Payments and upcoming due dates", reminders.count { it.category == "Installments" && !it.done }, Icons.Rounded.Event, Color(0xFF9DABFF), openInstallments) }
+        item { PersonalCategoryCard("Birthdays", "People and dates worth remembering", reminders.count { it.category == "Birthdays" && !it.done }, Icons.Rounded.Cake, Color(0xFFFFB5C8), openBirthdays) }
+        item { PersonalCategoryCard("Miscellaneous", "Everything else you want to keep close", reminders.count { it.category == "Miscellaneous" && !it.done }, Icons.Rounded.EditNote, Color(0xFFFFC58A), openMisc) }
+        item {
+            Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth()) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.Lock, null, tint = Mint, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                        Text("Private by design", color = JournalInk, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                        Text("Personal data stays on this device and is not sent to the Store server.", color = Muted, fontSize = 10.sp)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable private fun PersonalMetric(value: String, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier = Modifier) {
+    Surface(modifier, shape = RoundedCornerShape(19.dp), color = JournalCard) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Icon(icon, null, tint = Mint, modifier = Modifier.size(18.dp))
+            Text(value, color = JournalInk, fontSize = 22.sp, fontWeight = FontWeight.Bold)
+            Text(label, color = Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp, maxLines = 1)
+        }
+    }
+}
+
+@Composable private fun PersonalCategoryCard(title: String, detail: String, count: Int, icon: androidx.compose.ui.graphics.vector.ImageVector, accent: Color, onClick: () -> Unit) {
+    Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth().clickable { onClick() }) {
+        Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(47.dp).background(accent.copy(alpha = .13f), RoundedCornerShape(16.dp)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = accent, modifier = Modifier.size(22.dp))
+            }
+            Column(Modifier.weight(1f).padding(horizontal = 13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(title, color = JournalInk, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                Text(detail, color = Muted, fontSize = 10.sp, maxLines = 2)
+            }
+            Surface(shape = RoundedCornerShape(12.dp), color = accent.copy(alpha = .12f)) {
+                Text(count.toString(), color = accent, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 11.dp, vertical = 7.dp))
+            }
+            Icon(Icons.Rounded.ChevronRight, null, tint = Muted, modifier = Modifier.padding(start = 5.dp).size(18.dp))
         }
     }
 }
@@ -169,6 +248,7 @@ class MainActivity : ComponentActivity() {
 @Composable private fun HomeScreen(
     reminders: List<ReminderItem>,
     batches: List<BatchItem>,
+    storeOverview: StoreOverview,
     english: Boolean,
     goReminders: () -> Unit,
     goExpiry: () -> Unit,
@@ -193,11 +273,11 @@ class MainActivity : ComponentActivity() {
     LazyColumn(
         modifier = Modifier.fillMaxSize().background(JournalPaper).padding(horizontal = 18.dp),
         contentPadding = PaddingValues(top = 5.dp, bottom = 26.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
+        verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         item {
-            Surface(shape = RoundedCornerShape(24.dp), color = Mint, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(19.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Surface(shape = RoundedCornerShape(29.dp), color = Color.Transparent, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.fillMaxWidth().background(Brush.linearGradient(listOf(Color(0xFF8BFFE0), Color(0xFF61D9BB), Color(0xFF4BC7AC))), RoundedCornerShape(29.dp)).padding(21.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("TODAY AT A GLANCE", color = Color(0xFF153C36), fontSize = 10.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
@@ -209,10 +289,10 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        MintStat("$total", "TASKS", Modifier.weight(1f))
+                        MintStat("${total - doneCount}", "PENDING", Modifier.weight(1f))
                         MintStat("$doneCount", "DONE", Modifier.weight(1f))
-                        MintStat("$expiringCount", "EXPIRING", Modifier.weight(1f))
-                        MintStat("$birthdayCount", "BIRTHDAYS", Modifier.weight(1f))
+                        MintStat("$expiringCount", "PERSONAL EXPIRY", Modifier.weight(1f))
+                        MintStat("${storeOverview.taskCount}", "STORE TASKS", Modifier.weight(1f))
                     }
                 }
             }
@@ -243,6 +323,14 @@ class MainActivity : ComponentActivity() {
             }
         }
         item {
+            DarkTaskCard(
+                "STORE WORKSPACE",
+                if (storeOverview.role.isBlank()) "Connect your team account" else "${storeOverview.taskCount - storeOverview.doneCount} tasks pending",
+                if (storeOverview.role.isBlank()) "Tasks · shifts · products · expiry" else "${storeOverview.shiftCount} shifts · ${storeOverview.batchCount} batches · ${storeOverview.expiringCount} expiring soon",
+                Icons.Rounded.ShoppingBag, storeOverview.expiringCount > 0, goExpiry, Modifier.fillMaxWidth()
+            )
+        }
+        item {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Your reminders", modifier = Modifier.weight(1f), color = JournalInk, fontSize = 19.sp, fontWeight = FontWeight.Bold)
                 Text("+ Add", color = Mint, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.clickable { add() })
@@ -250,14 +338,16 @@ class MainActivity : ComponentActivity() {
         }
         if (visible.isEmpty()) item { Text("Nothing here yet. Add your first reminder.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical = 12.dp)) }
         else items(visible.take(6), key = { "dark-${it.id}" }) { item ->
-            Surface(shape = RoundedCornerShape(18.dp), color = JournalCard, modifier = Modifier.fillMaxWidth().clickable { toggleTask(item) }) {
+            Surface(shape = RoundedCornerShape(22.dp), color = JournalCard, modifier = Modifier.fillMaxWidth().clickable { toggleTask(item) }) {
                 Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.NotificationsNone, null, tint = Mint, modifier = Modifier.size(22.dp))
                     Column(Modifier.weight(1f).padding(horizontal = 11.dp)) {
                         Text(item.title, color = JournalInk, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                         Text("${item.date} · ${item.time}   •   ${categoryLabel(item.category, true)}", color = Muted, fontSize = 10.sp)
                     }
-                    Switch(checked = item.done, onCheckedChange = { toggleTask(item) }, colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF102B27), checkedTrackColor = Mint, uncheckedThumbColor = Muted, uncheckedTrackColor = CardDarkAlt))
+                    IconButton(onClick = { toggleTask(item) }) {
+                        Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked, null, tint = if (item.done) Mint else Muted, modifier = Modifier.size(23.dp))
+                    }
                 }
             }
         }
@@ -272,24 +362,23 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun DarkTaskCard(title: String, value: String, detail: String, icon: androidx.compose.ui.graphics.vector.ImageVector, active: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
-    var enabled by remember { mutableStateOf(active) }
-    val bg = if (enabled) Mint else JournalCard
-    val fg = if (enabled) Color(0xFF102B27) else JournalInk
-    Surface(shape = RoundedCornerShape(22.dp), color = bg, modifier = modifier.heightIn(min = 158.dp).clickable { onClick() }) {
+    val bg = if (active) Color(0xFF263D3A) else JournalCard
+    val fg = JournalInk
+    Surface(shape = RoundedCornerShape(22.dp), color = bg, modifier = modifier.heightIn(min = 146.dp).clickable { onClick() }) {
         Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, null, tint = fg, modifier = Modifier.size(21.dp))
                 Spacer(Modifier.weight(1f))
-                Icon(Icons.Rounded.NotificationsNone, null, tint = if (enabled) Color(0xFF315C53) else Muted, modifier = Modifier.size(17.dp))
+                Icon(Icons.Rounded.NotificationsNone, null, tint = if (active) Mint else Muted, modifier = Modifier.size(17.dp))
             }
-            Text(title, color = if (enabled) Color(0xFF315C53) else Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp)
+            Text(title, color = if (active) Mint else Muted, fontSize = 9.sp, fontWeight = FontWeight.Bold, letterSpacing = .7.sp)
             Text(value, color = fg, fontSize = 17.sp, fontWeight = FontWeight.Bold, maxLines = 2)
-            Text(detail, color = if (enabled) Color(0xFF315C53) else Muted, fontSize = 10.sp, maxLines = 2)
+            Text(detail, color = if (active) Mint else Muted, fontSize = 10.sp, maxLines = 2)
             Spacer(Modifier.weight(1f))
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (enabled) "ON" else "OFF", color = fg, fontSize = 9.sp, fontWeight = FontWeight.Bold)
+                Text(if (active) "NEEDS ATTENTION" else "UP TO DATE", color = if (active) Mint else Muted, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = .5.sp)
                 Spacer(Modifier.weight(1f))
-                Switch(checked = enabled, onCheckedChange = { enabled = it }, colors = SwitchDefaults.colors(checkedThumbColor = Color(0xFF102B27), checkedTrackColor = Color(0xFF4DE0B8), uncheckedThumbColor = Muted, uncheckedTrackColor = CardDarkAlt))
+                Icon(Icons.Rounded.ArrowOutward, null, tint = if (active) Mint else Muted, modifier = Modifier.size(15.dp))
             }
         }
     }
@@ -321,47 +410,70 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-@Composable private fun ProfileScreen(dark: Boolean, onTheme: (Boolean) -> Unit) {
-    Column(Modifier.fillMaxSize().background(JournalPaper).padding(20.dp), verticalArrangement = Arrangement.spacedBy(15.dp)) {
+@Composable private fun ProfileScreen() {
+    Column(Modifier.fillMaxSize().background(JournalPaper).padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         Text("PROFILE", color = Mint, fontSize = 10.sp, letterSpacing = 1.6.sp, fontWeight = FontWeight.Bold)
-        Text("Your space", color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+        Text("Your account", color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
         JournalCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(54.dp).background(Color(0xFF343848), CircleShape), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Rounded.PersonOutline, null, tint = Mint, modifier = Modifier.size(28.dp))
+                Box(Modifier.size(58.dp).background(Color(0xFF203B37), CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Person, null, tint = Mint, modifier = Modifier.size(29.dp))
                 }
-                Column(Modifier.padding(start = 13.dp)) {
+                Column(Modifier.padding(start = 13.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     Text("Reminder user", color = JournalInk, fontWeight = FontWeight.Bold, fontSize = 16.sp)
-                    Text("Personal organizer", color = Muted, fontSize = 11.sp)
+                    Text("Personal workspace", color = Muted, fontSize = 11.sp)
+                    Text("LOCAL PROFILE", color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
                 }
             }
         }
-        Text("Your reminders and store expiry lists are saved locally on this device.", color = Muted, fontSize = 12.sp)
+        JournalCard(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Rounded.Shield, null, tint = Mint)
+                Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Privacy", color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text("Personal reminders stay on this device.", color = Muted, fontSize = 11.sp)
+                }
+            }
+        }
+        Text("Account details for Store access appear here after a Store account is connected.", color = Muted, fontSize = 11.sp)
     }
 }
 
 @Composable private fun SettingsScreen() {
     Column(Modifier.fillMaxSize().background(JournalPaper).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
         Text("SETTINGS", color = Mint, fontSize = 10.sp, letterSpacing = 1.5.sp, fontWeight = FontWeight.Bold)
-        Text("App preferences", color = JournalInk, fontSize = 27.sp, fontWeight = FontWeight.Bold)
+        Text("Make it yours.", color = JournalInk, fontSize = 28.sp, fontWeight = FontWeight.Bold)
         JournalCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.NotificationsActive, null, tint = Mint)
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.NotificationsActive, null, tint = Mint) }
+                Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text("Notifications", color = JournalInk, fontWeight = FontWeight.SemiBold)
-                    Text("Reminder alerts are managed by Android", color = Muted, fontSize = 11.sp)
+                    Text("Reminder alerts are handled by Android.", color = Muted, fontSize = 11.sp)
                 }
+                Icon(Icons.Rounded.ChevronRight, null, tint = Muted)
             }
         }
         JournalCard(Modifier.fillMaxWidth()) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Rounded.Storage, null, tint = Mint)
-                Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                    Text("Local data", color = JournalInk, fontWeight = FontWeight.SemiBold)
-                    Text("Your reminders stay on this device", color = Muted, fontSize = 11.sp)
+                Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Storage, null, tint = Mint) }
+                Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Local storage", color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text("Your personal data remains on this phone.", color = Muted, fontSize = 11.sp)
                 }
+                Icon(Icons.Rounded.CheckCircle, null, tint = Mint)
             }
         }
+        JournalCard(Modifier.fillMaxWidth()) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(42.dp).background(Mint.copy(alpha = .12f), RoundedCornerShape(14.dp)), contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Palette, null, tint = Mint) }
+                Column(Modifier.weight(1f).padding(start = 12.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text("Visual style", color = JournalInk, fontWeight = FontWeight.SemiBold)
+                    Text("Dark Slate · Mint", color = Muted, fontSize = 11.sp)
+                }
+                Surface(shape = RoundedCornerShape(20.dp), color = Color(0xFF203B37)) { Text("ACTIVE", color = Mint, fontSize = 8.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) }
+            }
+        }
+        Text("Reminder 3.0 · Designed for focus", color = Muted, fontSize = 10.sp, modifier = Modifier.padding(top = 5.dp))
     }
 }
 
@@ -400,7 +512,7 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable private fun HomeReminderRow(item: ReminderItem, english: Boolean) {
-    Surface(shape = RoundedCornerShape(17.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+    Surface(shape = RoundedCornerShape(21.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(42.dp).background(Lilac.copy(alpha = .13f), RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
                 Icon(Icons.Rounded.EventNote, null, tint = Lilac, modifier = Modifier.size(21.dp))
@@ -419,7 +531,7 @@ class MainActivity : ComponentActivity() {
 @Composable private fun HomeBatchRow(item: BatchItem, english: Boolean) {
     val days = daysUntil(item.expiry)
     val accent = if (days < 0) Color(0xFFFF6B6B) else if (days <= 7) Lilac else Color(0xFFB8B8B8)
-    Surface(shape = RoundedCornerShape(17.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
+    Surface(shape = RoundedCornerShape(21.dp), color = MaterialTheme.colorScheme.surface, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(42.dp).background(accent.copy(alpha = .12f), RoundedCornerShape(13.dp)), contentAlignment = Alignment.Center) {
                 Icon(Icons.Rounded.Inventory2, null, tint = accent, modifier = Modifier.size(21.dp))
@@ -460,29 +572,54 @@ class MainActivity : ComponentActivity() {
 @Composable private fun ReminderRow(item: ReminderItem, english: Boolean, toggle: () -> Unit, delete: () -> Unit) {
     Surface(shape = RoundedCornerShape(18.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) { Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(12.dp), color = PaleLilac, modifier = Modifier.size(42.dp).clickable { toggle() }) { Box(contentAlignment = Alignment.Center) { Icon(if (item.done) Icons.Rounded.CheckCircle else Icons.Rounded.Notifications, null, tint = Lilac) } }; Column(Modifier.weight(1f).padding(horizontal = 11.dp)) { Text(item.title, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface); Text("${item.date}  •  ${item.time}  •  ${categoryLabel(item.category, english)}", color = Muted, fontSize = 10.sp) }; IconButton(onClick = delete) { Icon(Icons.Rounded.DeleteOutline, null, tint = Muted) } } }
 }
-@Composable private fun BatchRow(item: BatchItem, english: Boolean, delete: () -> Unit) { val days = daysUntil(item.expiry); val warning = days < 0 || days <= 7; Surface(shape = RoundedCornerShape(17.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) { Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(12.dp), color = if (warning) Color(0xFF35251F) else PaleLilac, modifier = Modifier.size(42.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Inventory2, null, tint = if (warning) Color(0xFFFF8A65) else Lilac) } }; Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text(item.product, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface); Text("${item.quantity} ${s("units", "عدد", english)}  •  ${item.expiry}", fontSize = 11.sp, color = Muted); if (item.barcode.isNotBlank()) Text("Barcode: ${item.barcode}", fontSize = 9.sp, color = Muted) }; Text(if (days < 0) s("Expired", "منقضی", english) else if (days == 0) s("Today", "امروز", english) else "$days ${s("days", "روز", english)}", color = if (warning) Color(0xFFFF8A65) else Lilac, fontWeight = FontWeight.Bold, fontSize = 10.sp); IconButton(onClick = delete) { Icon(Icons.Rounded.DeleteOutline, null, tint = Muted) } } } }
+@Composable private fun BatchRow(item: BatchItem, english: Boolean, delete: () -> Unit) { val days = daysUntil(item.expiry); val warning = days < 0 || days <= 7; Surface(shape = RoundedCornerShape(21.dp), color = MaterialTheme.colorScheme.surface, tonalElevation = 1.dp) { Row(Modifier.fillMaxWidth().padding(13.dp), verticalAlignment = Alignment.CenterVertically) { Surface(shape = RoundedCornerShape(12.dp), color = if (warning) Color(0xFF35251F) else PaleLilac, modifier = Modifier.size(42.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Inventory2, null, tint = if (warning) Color(0xFFFF8A65) else Lilac) } }; Column(Modifier.weight(1f).padding(horizontal = 10.dp)) { Text(item.product, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface); Text("${item.quantity} ${s("units", "عدد", english)}  •  ${item.expiry}", fontSize = 11.sp, color = Muted); if (item.barcode.isNotBlank()) Text("Barcode: ${item.barcode}", fontSize = 9.sp, color = Muted) }; Text(if (days < 0) s("Expired", "منقضی", english) else if (days == 0) s("Today", "امروز", english) else "$days ${s("days", "روز", english)}", color = if (warning) Color(0xFFFF8A65) else Lilac, fontWeight = FontWeight.Bold, fontSize = 10.sp); IconButton(onClick = delete) { Icon(Icons.Rounded.DeleteOutline, null, tint = Muted) } } } }
 
 @Composable private fun EmptyState(title: String, subtitle: String) { Column(Modifier.fillMaxWidth().padding(vertical = 35.dp), horizontalAlignment = Alignment.CenterHorizontally) { Surface(shape = CircleShape, color = PaleLilac, modifier = Modifier.size(62.dp)) { Box(contentAlignment = Alignment.Center) { Icon(Icons.Rounded.AutoAwesome, null, tint = Lilac, modifier = Modifier.size(28.dp)) } }; Spacer(Modifier.height(12.dp)); Text(title, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground); Text(subtitle, color = Muted, fontSize = 11.sp, textAlign = TextAlign.Center) } }
 
 @Composable private fun BottomBar(selected: Int, english: Boolean, onSelect: (Int) -> Unit) {
-    val selectedNav = when (selected) { 5 -> 0; 0, 1, 2, 3, 4 -> 1; 7 -> 2; else -> 3 }
+    val selectedNav = when (selected) {
+        5 -> 0
+        1, 2, 3, 4, 8 -> 1
+        0 -> 2
+        7 -> 3
+        else -> 4
+    }
     val navItems = listOf(
         Triple("Store", Icons.Rounded.ShoppingBag, 5),
-        Triple("Personal", Icons.Rounded.Home, 0),
+        Triple("Personal", Icons.Rounded.PersonOutline, 1),
+        Triple("Home", Icons.Rounded.Home, 0),
         Triple("Settings", Icons.Rounded.Settings, 7),
         Triple("Profile", Icons.Rounded.PersonOutline, 6)
     )
-    Row(Modifier.fillMaxWidth().background(JournalPaper).padding(horizontal = 13.dp, vertical = 8.dp), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-        navItems.forEachIndexed { index, item ->
-            val active = selectedNav == index
-            Column(Modifier.weight(1f).clickable { onSelect(item.third) }.padding(vertical = 2.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.Center) {
-                    Icon(item.second, null, tint = if (active) Mint else Muted, modifier = Modifier.size(21.dp))
-                    AnimatedVisibility(visible = active, enter = fadeIn(tween(180)), exit = fadeOut(tween(120))) {
-                        Text(item.first, color = Mint, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(start = 5.dp), maxLines = 1)
+    Surface(
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 13.dp, vertical = 8.dp),
+        shape = RoundedCornerShape(28.dp), color = Color(0xFF252936),
+        shadowElevation = 15.dp, border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(alpha = .055f))
+    ) {
+        Row(Modifier.fillMaxWidth().padding(horizontal = 5.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+            navItems.forEachIndexed { index, item ->
+                val active = selectedNav == index
+                val scale by animateFloatAsState(if (active) 1.08f else 1f, spring(dampingRatio = .62f, stiffness = 420f), label = "nav-scale-$index")
+                Column(
+                    Modifier.weight(1f).clickable { onSelect(item.third) }.padding(vertical = 3.dp).graphicsLayer { scaleX = scale; scaleY = scale },
+                    horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (index == 2) {
+                        Box(Modifier.size(42.dp).background(if (active) Mint else Color(0xFF343A49), CircleShape), contentAlignment = Alignment.Center) {
+                            Icon(item.second, null, tint = if (active) Color(0xFF102B27) else Muted, modifier = Modifier.size(22.dp))
+                        }
+                    } else {
+                        Icon(item.second, null, tint = if (active) Mint else Muted, modifier = Modifier.size(22.dp))
                     }
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = active,
+                        enter = fadeIn(tween(180)) + androidx.compose.animation.expandHorizontally(tween(180)),
+                        exit = fadeOut(tween(110)) + androidx.compose.animation.shrinkHorizontally(tween(110))
+                    ) {
+                        Text(item.first, color = Mint, fontSize = 9.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                    }
+                    Box(Modifier.size(width = if (active) 13.dp else 4.dp, height = 3.dp).background(if (active) Mint else Color.Transparent, RoundedCornerShape(50)))
                 }
-                Box(Modifier.size(width = 4.dp, height = 4.dp).background(if (active) Mint else Color.Transparent, CircleShape))
             }
         }
     }
