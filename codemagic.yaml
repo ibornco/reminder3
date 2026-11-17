@@ -5,12 +5,21 @@ workflows:
     environment:
       java: 17
     scripts:
-      - name: Install Gradle 8.9
+      - name: Verify Android build tools
         script: |
-          curl -L https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
-          unzip -q /tmp/gradle.zip -d /tmp
-      - name: Build installable debug APK
+          set -euo pipefail
+          java -version
+          command -v gradle
+          gradle --version
+      - name: Build installable signed debug APK
         script: |
-          /tmp/gradle-8.9/bin/gradle --no-daemon assembleDebug
+          set -euo pipefail
+          gradle --no-daemon --stacktrace clean assembleDebug
+          APK="app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          mkdir -p build/outputs/apk/debug
+          cp "$APK" "build/outputs/apk/debug/Reminder-2.9-debug.apk"
+          echo "APK created: build/outputs/apk/debug/Reminder-2.9-debug.apk"
     artifacts:
       - app/build/outputs/apk/debug/*.apk
+      - build/outputs/apk/debug/Reminder-2.9-debug.apk
