@@ -37,6 +37,24 @@ import android.content.res.Configuration
 
 private const val STORE_BASE_URL = "https://iborn.pythonanywhere.com/api/v1"
 
+private fun loadStoreProfile(context: Context): StoreProfile? {
+    val prefs = context.getSharedPreferences("reminder_store_profile", Context.MODE_PRIVATE)
+    val name = prefs.getString("display_name", null) ?: return null
+    val username = prefs.getString("username", null) ?: return null
+    val role = prefs.getString("role", null) ?: return null
+    return StoreProfile(prefs.getInt("id", 0), username, name, role)
+}
+
+private fun persistStoreProfile(context: Context, profile: StoreProfile?) {
+    val prefs = context.getSharedPreferences("reminder_store_profile", Context.MODE_PRIVATE)
+    if (profile == null) prefs.edit().clear().apply() else prefs.edit()
+        .putString("display_name", profile.displayName)
+        .putString("username", profile.username)
+        .putString("role", profile.role)
+        .putInt("id", profile.id)
+        .apply()
+}
+
 private val StoreMint = Color(0xFF7DF9D5)
 private val StoreInk = Color(0xFFF4F6FA)
 private val StoreMuted = Color(0xFFA4A9B8)
@@ -100,6 +118,8 @@ data class StoreShift(val id: Int, val date: String, val type: String, val start
 data class StoreProduct(val id: Int, val batchId: Int, val name: String, val category: String, val barcode: String, val expiry: String, val quantity: Int)
 data class StoreOverview(val taskCount: Int = 0, val doneCount: Int = 0, val shiftCount: Int = 0, val batchCount: Int = 0, val expiringCount: Int = 0, val role: String = "")
 
+class StoreHttpException(val statusCode: Int, message: String) : IllegalStateException(message)
+
 class StoreApiClient(context: Context) {
     private val prefs = context.getSharedPreferences("reminder_store_auth", Context.MODE_PRIVATE)
     var token: String
@@ -130,7 +150,7 @@ class StoreApiClient(context: Context) {
             }
             if (code !in 200..299) {
                 val detail = result.optString("error").ifBlank { "Request failed (HTTP $code)" }
-                throw IllegalStateException(detail)
+                throw StoreHttpException(code, detail)
             }
             if (raw.isBlank()) throw IllegalStateException("Server returned an empty response (HTTP $code). Check the PythonAnywhere API logs.")
             result
@@ -199,15 +219,16 @@ class StoreApiClient(context: Context) {
     suspend fun createBatch(productId: Int, expiry: String, quantity: Int) {
         call("POST", "/products/$productId/batches", JSONObject().put("expiry_date", expiry).put("quantity", quantity))
     }
-    suspend fun logout() { if (token.isNotBlank()) runCatching { call("POST", "/auth/logout", JSONObject()) }; token = "" }
+    fun clearLocalSession() { token = "" }
+    suspend fun logout() { if (token.isNotBlank()) runCatching { call("POST", "/auth/logout", JSONObject()) }; clearLocalSession() }
 }
 
 @Composable
-fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOverview) -> Unit = {}) {
+fun StorePortal(context: Context, english: Boolean = true, visible: Boolean = true, onOverview: (StoreOverview) -> Unit = {}) {
     val api = remember { StoreApiClient(context) }
     val scope = rememberCoroutineScope()
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
-    var profile by remember { mutableStateOf<StoreProfile?>(null) }
+    var profile by remember { mutableStateOf(loadStoreProfile(context)) }
     var tasks by remember { mutableStateOf<List<StoreTask>>(emptyList()) }
     var staff by remember { mutableStateOf<List<StoreStaff>>(emptyList()) }
     var shifts by remember { mutableStateOf<List<StoreShift>>(emptyList()) }
@@ -215,6 +236,7 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
     var page by remember { mutableStateOf("Tasks") }
     var error by remember { mutableStateOf("") }; var loading by remember { mutableStateOf(false) }
     var introVisible by remember { mutableStateOf(false) }; var dataReady by remember { mutableStateOf(false) }
+    var sessionChecked by remember { mutableStateOf(false) }
 
     fun refresh() {
         scope.launch {
@@ -225,38 +247,57 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
                     val shiftRequest = async { api.shifts() }
                     val manager = profile?.role == "manager"
                     val staffRequest = if (manager) async { api.staff() } else null
-                    val productRequest = if (manager) async { api.products() } else null
+                    val productRequest = async { api.products() }
                     tasks = taskRequest.await()
                     shifts = shiftRequest.await()
-                    if (manager) {
-                        staff = staffRequest!!.await()
-                        products = productRequest!!.await()
-                    }
+                    products = productRequest.await()
+                    if (manager) staff = staffRequest!!.await()
                     val soon = if (manager) products.count { product ->
                         runCatching { val days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), LocalDate.parse(product.expiry)); days in 0..7 }.getOrDefault(false)
                     } else 0
                     onOverview(StoreOverview(tasks.size, tasks.count { it.done }, shifts.size, products.size, soon, profile?.role.orEmpty()))
                 }
+            } catch (e: StoreHttpException) {
+                error = e.message ?: "Could not load Store data"
+                if (e.statusCode == 401) { api.clearLocalSession(); profile = null; persistStoreProfile(context, null) }
             } catch (e: Exception) { error = e.message ?: "Could not load Store data" }
             finally { loading = false; dataReady = true }
         }
     }
-    LaunchedEffect(Unit) {
-        if (api.token.isNotBlank()) {
+    LaunchedEffect(visible) {
+        if (visible && !sessionChecked) {
+            sessionChecked = true
+            if (api.token.isNotBlank()) {
             loading = true
-            try { dataReady = false; profile = api.profile(); introVisible = true } catch (_: Exception) { api.logout(); dataReady = true }
+            try {
+                dataReady = false
+                profile = api.profile()
+                persistStoreProfile(context, profile)
+                introVisible = !context.getSharedPreferences("reminder_store_auth", Context.MODE_PRIVATE).getBoolean("intro_seen", false)
+            } catch (e: StoreHttpException) {
+                if (e.statusCode == 401) { api.clearLocalSession(); profile = null; persistStoreProfile(context, null) }
+                error = if (e.statusCode == 401) "unauthorized" else (e.message ?: "Could not load Store data")
+                dataReady = true
+            } catch (e: Exception) {
+                // Network failures must never erase a valid server session.
+                error = e.message ?: "Could not load Store data"
+                dataReady = true
+            }
             loading = false
+            }
         }
     }
-    LaunchedEffect(profile?.id) { if (profile != null) refresh() }
+    LaunchedEffect(profile?.id, visible) { if (profile != null && visible && !dataReady) refresh() }
     LaunchedEffect(introVisible) {
         if (introVisible) {
             kotlinx.coroutines.delay(2200)
             while (!dataReady) kotlinx.coroutines.delay(100)
             introVisible = false
+            context.getSharedPreferences("reminder_store_auth", Context.MODE_PRIVATE).edit().putBoolean("intro_seen", true).apply()
         }
     }
 
+    if (!visible) { Box(Modifier.size(0.dp)); return }
     if (introVisible) { StoreLoadingVideo(context); return }
 
     CompositionLocalProvider(LocalStoreEnglish provides english) {
@@ -275,7 +316,7 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
                     Text(storeText("Your shared team workspace"), color = StoreMuted, fontSize = 12.sp)
                     StoreField(username, { username = it }, "Username")
                     StoreField(password, { password = it }, "Password", true)
-                    Button(onClick = { scope.launch { loading = true; error = ""; try { dataReady = false; profile = api.login(username.trim(), password); introVisible = true; password = "" } catch (e: Exception) { introVisible = false; dataReady = true; error = e.message ?: "Login failed" }; loading = false } }, enabled = !loading && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = StoreMint, contentColor = StoreBlack)) { Text(storeText(if (loading) "Connecting…" else "Sign in"), fontWeight = FontWeight.Bold) }
+                    Button(onClick = { scope.launch { loading = true; error = ""; try { dataReady = false; profile = api.login(username.trim(), password); persistStoreProfile(context, profile); context.getSharedPreferences("reminder_store_auth", Context.MODE_PRIVATE).edit().putBoolean("intro_seen", false).apply(); introVisible = true; password = "" } catch (e: Exception) { introVisible = false; dataReady = true; error = e.message ?: "Login failed" }; loading = false } }, enabled = !loading && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = StoreMint, contentColor = StoreBlack)) { Text(storeText(if (loading) "Connecting…" else "Sign in"), fontWeight = FontWeight.Bold) }
                     if (error.isNotBlank()) Text(storeText(error), color = Color(0xFFFF8A80), fontSize = 12.sp)
                     Text(storeText("Sign in once. This device keeps your session until you log out or access is revoked."), color = StoreMuted, fontSize = 12.sp)
                 }
@@ -287,21 +328,21 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
                 Metric("TASKS", tasks.size.toString(), Modifier.weight(1f))
                 Metric("DONE", tasks.count { it.done }.toString(), Modifier.weight(1f))
             }
-            val tabs = if (manager) listOf("Tasks", "Staff", "Shifts", "Products") else listOf("My tasks", "Schedule")
+            val tabs = if (manager) listOf("Tasks", "Staff", "Shifts", "Products") else listOf("My tasks", "Schedule", "Products")
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                 tabs.forEach { tab -> FilterChip(selected = page == tab, onClick = { page = tab }, label = { Text(storeText(tab), fontSize = 11.sp) }, colors = FilterChipDefaults.filterChipColors(selectedContainerColor = StoreMint, selectedLabelColor = StoreBlack)) }
             }
             if (loading) LinearProgressIndicator(Modifier.fillMaxWidth(), color = StoreMint)
             when (page) {
-                "Staff" -> ManagerStaff(staff, onCreate = { u, n, p -> scope.launch { runCatching { api.createStaff(u,n,p); staff=api.staff() }.onFailure { error=it.message ?: "Create failed" } } }, onToggle = { id, active -> scope.launch { runCatching { api.setStaffActive(id,active); staff=api.staff() }.onFailure { error=it.message ?: "Update failed" } } })
-                "Shifts", "Schedule" -> ShiftPanel(manager, staff, shifts, { d,t,ids -> scope.launch { runCatching { api.saveShift(d,t,ids); shifts=api.shifts() }.onFailure { error=it.message ?: "Save failed" } } })
-                "Products" -> ProductPanel(products, onCreate = { n,c,b,e,q -> scope.launch { runCatching { api.createProduct(n,c,b,e,q); products=api.products() }.onFailure { error=it.message ?: "Save failed" } } }, onAddBatch = { id,e,q -> scope.launch { runCatching { api.createBatch(id,e,q); products=api.products() }.onFailure { error=it.message ?: "Batch save failed" } } })
-                else -> TaskPanel(manager, tasks, staff, onComplete = { id, done -> scope.launch { runCatching { api.complete(id,done); tasks=api.tasks() }.onFailure { error=it.message ?: "Update failed" } } }, onCreate = { title,date,type,assignee -> scope.launch { runCatching { api.createTask(title,date,type,assignee); tasks=api.tasks() }.onFailure { error=it.message ?: "Create failed" } } }, onUpdate = { id,title,date,type,assignee -> scope.launch { runCatching { api.updateTask(id,title,date,type,assignee); tasks=api.tasks() }.onFailure { error=it.message ?: "Edit failed" } } }, onDelete = { id -> scope.launch { runCatching { api.deleteTask(id); tasks=api.tasks() }.onFailure { error=it.message ?: "Delete failed" } } })
+                "Staff" -> ManagerStaff(staff, modifier = Modifier.weight(1f), onCreate = { u, n, p -> scope.launch { runCatching { api.createStaff(u,n,p); staff=api.staff() }.onFailure { error=it.message ?: "Create failed" } } }, onToggle = { id, active -> scope.launch { runCatching { api.setStaffActive(id,active); staff=api.staff() }.onFailure { error=it.message ?: "Update failed" } } })
+                "Shifts", "Schedule" -> ShiftPanel(manager, staff, shifts, modifier = Modifier.weight(1f), onSave = { d,t,ids -> scope.launch { runCatching { api.saveShift(d,t,ids); shifts=api.shifts() }.onFailure { error=it.message ?: "Save failed" } } })
+                "Products" -> ProductPanel(products, modifier = Modifier.weight(1f), onCreate = { n,c,b,e,q -> scope.launch { runCatching { api.createProduct(n,c,b,e,q); products=api.products() }.onFailure { error=it.message ?: "Save failed" } } }, onAddBatch = { id,e,q -> scope.launch { runCatching { api.createBatch(id,e,q); products=api.products() }.onFailure { error=it.message ?: "Batch save failed" } } })
+                else -> TaskPanel(manager, tasks, staff, modifier = Modifier.weight(1f), onComplete = { id, done -> scope.launch { runCatching { api.complete(id,done); tasks=api.tasks() }.onFailure { error=it.message ?: "Update failed" } } }, onCreate = { title,date,type,assignee -> scope.launch { runCatching { api.createTask(title,date,type,assignee); tasks=api.tasks() }.onFailure { error=it.message ?: "Create failed" } } }, onUpdate = { id,title,date,type,assignee -> scope.launch { runCatching { api.updateTask(id,title,date,type,assignee); tasks=api.tasks() }.onFailure { error=it.message ?: "Edit failed" } } }, onDelete = { id -> scope.launch { runCatching { api.deleteTask(id); tasks=api.tasks() }.onFailure { error=it.message ?: "Delete failed" } } })
             }
             if (error.isNotBlank()) Text(storeText(error), color = Color(0xFFFF8A80), fontSize = 12.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = { refresh() }) { Text(storeText("Refresh"), color = StoreMint) }
-                TextButton(onClick = { scope.launch { api.logout(); profile=null; tasks=emptyList(); staff=emptyList(); shifts=emptyList(); products=emptyList(); page="Tasks"; onOverview(StoreOverview()) } }) { Text(storeText("Log out"), color = StoreMuted) }
+                TextButton(onClick = { scope.launch { api.logout(); profile=null; persistStoreProfile(context, null); tasks=emptyList(); staff=emptyList(); shifts=emptyList(); products=emptyList(); page="Tasks"; onOverview(StoreOverview()) } }) { Text(storeText("Log out"), color = StoreMuted) }
             }
         }
     }
@@ -396,9 +437,9 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
     Card(colors=CardDefaults.cardColors(containerColor=StoreCard), shape=RoundedCornerShape(23.dp), modifier=Modifier.fillMaxWidth(), elevation=CardDefaults.cardElevation(defaultElevation = 1.dp)) { Column(Modifier.padding(14.dp), verticalArrangement=Arrangement.spacedBy(9.dp), content=content) }
 }
 
-@Composable private fun ManagerStaff(staff: List<StoreStaff>, onCreate: (String,String,String)->Unit, onToggle: (Int,Boolean)->Unit) {
+@Composable private fun ManagerStaff(staff: List<StoreStaff>, modifier: Modifier = Modifier, onCreate: (String,String,String)->Unit, onToggle: (Int,Boolean)->Unit) {
     var username by remember { mutableStateOf("") }; var name by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
-    LazyColumn(verticalArrangement=Arrangement.spacedBy(10.dp)) {
+    LazyColumn(modifier = modifier.fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(10.dp)) {
         item { PanelCard {
             Text(storeText("Add staff member"), color=StoreInk, fontWeight=FontWeight.Bold)
             StoreField(username,{username=it},"Username"); StoreField(name,{name=it},"Full name"); StoreField(password,{password=it},"Temporary password",true)
@@ -409,9 +450,9 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
     }
 }
 
-@Composable private fun ShiftPanel(manager: Boolean, staff: List<StoreStaff>, shifts: List<StoreShift>, onSave: (String,String,Set<Int>)->Unit) {
+@Composable private fun ShiftPanel(manager: Boolean, staff: List<StoreStaff>, shifts: List<StoreShift>, modifier: Modifier = Modifier, onSave: (String,String,Set<Int>)->Unit) {
     var date by remember { mutableStateOf(LocalDate.now().toString()) }; var type by remember { mutableStateOf("morning") }; var selected by remember { mutableStateOf(setOf<Int>()) }
-    LazyColumn(verticalArrangement=Arrangement.spacedBy(9.dp)) {
+    LazyColumn(modifier = modifier.fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(9.dp)) {
         if(manager) item { PanelCard {
             Text(storeText("Schedule a shift"),color=StoreInk,fontWeight=FontWeight.Bold)
             StoreDatePicker(date,{date=it},"Shift date")
@@ -428,9 +469,11 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
     }
 }
 
-@Composable private fun TaskPanel(manager: Boolean, tasks: List<StoreTask>, staff: List<StoreStaff>, onComplete: (Int,Boolean)->Unit, onCreate: (String,String,String,Int?)->Unit, onUpdate: (Int,String,String,String,Int?)->Unit, onDelete: (Int)->Unit) {
+@Composable private fun TaskPanel(manager: Boolean, tasks: List<StoreTask>, staff: List<StoreStaff>, modifier: Modifier = Modifier, onComplete: (Int,Boolean)->Unit, onCreate: (String,String,String,Int?)->Unit, onUpdate: (Int,String,String,String,Int?)->Unit, onDelete: (Int)->Unit) {
     var title by remember { mutableStateOf("") }; var date by remember { mutableStateOf(LocalDate.now().toString()) }; var type by remember { mutableStateOf("morning") }; var assignee by remember { mutableStateOf("Shared shift task") }; var editingId by remember { mutableStateOf<Int?>(null) }
-    LazyColumn(verticalArrangement=Arrangement.spacedBy(9.dp)) {
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val editScope = rememberCoroutineScope()
+    LazyColumn(state = listState, modifier = modifier.fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(9.dp)) {
         if(manager) item { PanelCard {
             Text(storeText("Create task"),color=StoreInk,fontWeight=FontWeight.Bold)
             StoreField(title,{title=it},"Task title"); StoreDatePicker(date,{date=it},"Task date")
@@ -441,6 +484,7 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
                 staff.filter{it.active}.forEach { s -> DropdownMenuItem(text={Text(s.name)},onClick={ assignee="${s.id}:${s.name}"; expanded=false }) }
             } }
             Button(onClick={val id=assignee.substringBefore(":").toIntOrNull(); if(editingId==null) onCreate(title.trim(),date,type,id) else onUpdate(editingId!!,title.trim(),date,type,id); title=""; editingId=null; assignee="Shared shift task"},enabled=title.isNotBlank()&&runCatching{LocalDate.parse(date)}.isSuccess,colors=ButtonDefaults.buttonColors(containerColor=StoreMint,contentColor=StoreBlack)){Text(storeText(if(editingId==null) "Create task" else "Save task changes"))}
+            if (editingId != null) TextButton(onClick = { editingId=null; title=""; assignee="Shared shift task"; date=LocalDate.now().toString() }) { Text(storeText("Cancel"), color=StoreMuted) }
             Text(storeText("Assigned tasks are visible only to that employee and managers."),color=StoreMuted,fontSize=10.sp)
         } }
         item { Text(storeText(if(manager) "Store tasks" else "My tasks"),color=StoreInk,fontWeight=FontWeight.Bold) }
@@ -449,7 +493,7 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
                 Column(Modifier.weight(1f)) { Text(task.title,color=StoreInk,fontWeight=FontWeight.Medium); Text("${displayStoreDate(task.date, LocalStoreEnglish.current)} · ${storeText(if(task.shift=="morning") "Morning" else if(task.shift=="evening") "Evening" else task.shift)} · ${task.assignedName?.let { storeText(it) } ?: storeText("Shared")}",color=StoreMuted,fontSize=10.sp) }
                 Checkbox(checked=task.done,onCheckedChange={onComplete(task.id,it)},enabled=!manager || task.assignedName!=null,colors=CheckboxDefaults.colors(checkedColor=StoreMint))
                 if(manager) {
-                    TextButton(onClick={title=task.title;date=task.date;type=task.shift;assignee=staff.firstOrNull { it.name==task.assignedName }?.let { "${it.id}:${it.name}" } ?: "Shared shift task";editingId=task.id}) { Text(storeText("Edit"),color=StoreMint,fontSize=10.sp) }
+                    TextButton(onClick={title=task.title;date=task.date;type=task.shift;assignee=staff.firstOrNull { it.name==task.assignedName }?.let { "${it.id}:${it.name}" } ?: "Shared shift task";editingId=task.id;editScope.launch { listState.animateScrollToItem(0) }}) { Text(storeText("Edit"),color=StoreMint,fontSize=10.sp) }
                     TextButton(onClick={onDelete(task.id)}){Text(storeText("Delete"),color=Color(0xFFFF8A80),fontSize=10.sp)}
                 }
             }
@@ -458,10 +502,11 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
     }
 }
 
-@Composable private fun ProductPanel(products: List<StoreProduct>, onCreate: (String,String,String,String,Int)->Unit, onAddBatch: (Int,String,Int)->Unit) {
+@Composable private fun ProductPanel(products: List<StoreProduct>, modifier: Modifier = Modifier, onCreate: (String,String,String,String,Int)->Unit, onAddBatch: (Int,String,Int)->Unit) {
     var name by remember { mutableStateOf("") }; var category by remember { mutableStateOf("") }; var barcode by remember { mutableStateOf("") }; var expiry by remember { mutableStateOf(LocalDate.now().plusMonths(1).toString()) }; var quantity by remember { mutableStateOf("1") }
     var batchProductId by remember { mutableStateOf<Int?>(null) }; var batchExpanded by remember { mutableStateOf(false) }; var batchExpiry by remember { mutableStateOf(LocalDate.now().plusMonths(2).toString()) }; var batchQuantity by remember { mutableStateOf("1") }
-    LazyColumn(verticalArrangement=Arrangement.spacedBy(9.dp)) {
+    val groupedProducts = remember(products) { products.groupBy { it.id }.toList() }
+    LazyColumn(modifier = modifier.fillMaxWidth(), verticalArrangement=Arrangement.spacedBy(9.dp)) {
         item { PanelCard {
             Text(storeText("Add product / expiry batch"),color=StoreInk,fontWeight=FontWeight.Bold)
             StoreField(name,{name=it},"Product name"); StoreField(category,{category=it},"Category"); StoreField(barcode,{barcode=it},"Barcode (optional)"); StoreDatePicker(expiry,{expiry=it},"Expiry date"); StoreField(quantity,{quantity=it.filter(Char::isDigit)},"Quantity")
@@ -479,6 +524,16 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
             Button(onClick={onAddBatch(batchProductId!!,batchExpiry,batchQuantity.toIntOrNull()?:0);batchProductId=null},enabled=batchProductId!=null&&runCatching{LocalDate.parse(batchExpiry)}.isSuccess&&batchQuantity.toIntOrNull()!=null,colors=ButtonDefaults.buttonColors(containerColor=StoreMint,contentColor=StoreBlack)){Text(storeText("Add batch")) }
         } }
         item { Text(storeText("Expiry inventory"),color=StoreInk,fontWeight=FontWeight.Bold) }
-        items(products) { p -> PanelCard { Text(p.name,color=StoreInk,fontWeight=FontWeight.SemiBold); Text("${p.category.ifBlank { storeText("Uncategorized") }} · ${storeText("Qty")} ${p.quantity}",color=StoreMuted,fontSize=11.sp); Text("${storeText("Expiry:")} ${displayStoreDate(p.expiry, LocalStoreEnglish.current)}",color=StoreMint,fontSize=12.sp); if(p.barcode.isNotBlank()) Text("${storeText("Barcode:")} ${p.barcode}",color=StoreMuted,fontSize=10.sp) } }
+        items(groupedProducts, key = { it.first }) { (_, batches) ->
+            val first = batches.first()
+            PanelCard {
+                Text(first.name,color=StoreInk,fontWeight=FontWeight.SemiBold)
+                Text(first.category.ifBlank { storeText("Uncategorized") },color=StoreMuted,fontSize=11.sp)
+                if(first.barcode.isNotBlank()) Text("${storeText("Barcode:")} ${first.barcode}",color=StoreMuted,fontSize=10.sp)
+                batches.forEach { batch ->
+                    Text("${storeText("Expiry:")} ${displayStoreDate(batch.expiry, LocalStoreEnglish.current)} · ${storeText("Qty")} ${batch.quantity}",color=StoreMint,fontSize=12.sp)
+                }
+            }
+        }
     }
 }
