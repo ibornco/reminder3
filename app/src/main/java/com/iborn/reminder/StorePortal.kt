@@ -20,6 +20,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -27,6 +29,8 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.time.LocalDate
+import java.time.Instant
+import java.time.ZoneOffset
 
 private const val STORE_BASE_URL = "https://iborn.pythonanywhere.com/api/v1"
 
@@ -41,6 +45,7 @@ data class StoreTask(val id: Int, val title: String, val shift: String, val date
 data class StoreStaff(val id: Int, val username: String, val name: String, val active: Boolean)
 data class StoreShift(val id: Int, val date: String, val type: String, val start: String, val end: String, val members: List<String>)
 data class StoreProduct(val id: Int, val batchId: Int, val name: String, val category: String, val barcode: String, val expiry: String, val quantity: Int)
+data class StoreOverview(val taskCount: Int = 0, val doneCount: Int = 0, val shiftCount: Int = 0, val batchCount: Int = 0, val expiringCount: Int = 0, val role: String = "")
 
 class StoreApiClient(context: Context) {
     private val prefs = context.getSharedPreferences("reminder_store_auth", Context.MODE_PRIVATE)
@@ -64,9 +69,17 @@ class StoreApiClient(context: Context) {
         try {
             val code = connection.responseCode
             val stream = if (code in 200..299) connection.inputStream else connection.errorStream
-            val raw = stream?.bufferedReader()?.use { it.readText() } ?: "{}"
-            val result = JSONObject(raw)
-            if (code !in 200..299) throw IllegalStateException(result.optString("error", "Request failed ($code)"))
+            val raw = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            val result = try {
+                if (raw.isBlank()) JSONObject() else JSONObject(raw)
+            } catch (_: Exception) {
+                JSONObject().put("error", "Server returned a non-JSON response (HTTP $code)")
+            }
+            if (code !in 200..299) {
+                val detail = result.optString("error").ifBlank { "Request failed (HTTP $code)" }
+                throw IllegalStateException(detail)
+            }
+            if (raw.isBlank()) throw IllegalStateException("Server returned an empty response (HTTP $code). Check the PythonAnywhere API logs.")
             result
         } finally { connection.disconnect() }
     }
@@ -137,7 +150,7 @@ class StoreApiClient(context: Context) {
 }
 
 @Composable
-fun StorePortal(context: Context) {
+fun StorePortal(context: Context, onOverview: (StoreOverview) -> Unit = {}) {
     val api = remember { StoreApiClient(context) }
     val scope = rememberCoroutineScope()
     var username by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }
@@ -154,9 +167,23 @@ fun StorePortal(context: Context) {
         scope.launch {
             loading = true; dataReady = false; error = ""
             try {
-                tasks = api.tasks()
-                if (profile?.role == "manager") { staff = api.staff(); shifts = api.shifts(); products = api.products() }
-                else { shifts = api.shifts() }
+                coroutineScope {
+                    val taskRequest = async { api.tasks() }
+                    val shiftRequest = async { api.shifts() }
+                    val manager = profile?.role == "manager"
+                    val staffRequest = if (manager) async { api.staff() } else null
+                    val productRequest = if (manager) async { api.products() } else null
+                    tasks = taskRequest.await()
+                    shifts = shiftRequest.await()
+                    if (manager) {
+                        staff = staffRequest!!.await()
+                        products = productRequest!!.await()
+                    }
+                    val soon = if (manager) products.count { product ->
+                        runCatching { val days = java.time.temporal.ChronoUnit.DAYS.between(LocalDate.now(), LocalDate.parse(product.expiry)); days in 0..7 }.getOrDefault(false)
+                    } else 0
+                    onOverview(StoreOverview(tasks.size, tasks.count { it.done }, shifts.size, products.size, soon, profile?.role.orEmpty()))
+                }
             } catch (e: Exception) { error = e.message ?: "Could not load Store data" }
             finally { loading = false; dataReady = true }
         }
@@ -188,9 +215,10 @@ fun StorePortal(context: Context) {
             Icon(Icons.Rounded.Storefront, null, tint = StoreMint, modifier = Modifier.size(30.dp))
         }
         if (profile == null) {
-            Card(colors = CardDefaults.cardColors(containerColor = StoreCard), shape = RoundedCornerShape(24.dp)) {
-                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Sign in to Store", color = StoreInk, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+            Card(colors = CardDefaults.cardColors(containerColor = StoreCard), shape = RoundedCornerShape(28.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Text("Sign in to Store", color = StoreInk, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                    Text("Your shared team workspace", color = StoreMuted, fontSize = 12.sp)
                     StoreField(username, { username = it }, "Username")
                     StoreField(password, { password = it }, "Password", true)
                     Button(onClick = { scope.launch { loading = true; error = ""; try { dataReady = false; profile = api.login(username.trim(), password); introVisible = true; password = "" } catch (e: Exception) { introVisible = false; dataReady = true; error = e.message ?: "Login failed" }; loading = false } }, enabled = !loading && username.isNotBlank() && password.isNotBlank(), modifier = Modifier.fillMaxWidth(), colors = ButtonDefaults.buttonColors(containerColor = StoreMint, contentColor = StoreBlack)) { Text(if (loading) "Connecting…" else "Sign in", fontWeight = FontWeight.Bold) }
@@ -219,7 +247,7 @@ fun StorePortal(context: Context) {
             if (error.isNotBlank()) Text(error, color = Color(0xFFFF8A80), fontSize = 12.sp)
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 TextButton(onClick = { refresh() }) { Text("Refresh", color = StoreMint) }
-                TextButton(onClick = { scope.launch { api.logout(); profile=null; tasks=emptyList(); staff=emptyList(); shifts=emptyList(); products=emptyList(); page="Tasks" } }) { Text("Log out", color = StoreMuted) }
+                TextButton(onClick = { scope.launch { api.logout(); profile=null; tasks=emptyList(); staff=emptyList(); shifts=emptyList(); products=emptyList(); page="Tasks"; onOverview(StoreOverview()) } }) { Text("Log out", color = StoreMuted) }
             }
         }
     }
@@ -242,15 +270,67 @@ fun StorePortal(context: Context) {
 }
 
 @Composable private fun StoreField(value: String, onChange: (String)->Unit, label: String, secret: Boolean = false) {
-    OutlinedTextField(value, onChange, label={ Text(label) }, singleLine=true, modifier=Modifier.fillMaxWidth(), visualTransformation=if(secret) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None)
+    OutlinedTextField(
+        value, onChange, label = { Text(label) }, singleLine = true,
+        modifier = Modifier.fillMaxWidth(), shape = RoundedCornerShape(17.dp),
+        visualTransformation = if (secret) androidx.compose.ui.text.input.PasswordVisualTransformation() else androidx.compose.ui.text.input.VisualTransformation.None,
+        colors = OutlinedTextFieldDefaults.colors(
+            focusedBorderColor = StoreMint, unfocusedBorderColor = Color(0xFF454B5B),
+            focusedLabelColor = StoreMint, cursorColor = StoreMint,
+            focusedTextColor = StoreInk, unfocusedTextColor = StoreInk
+        )
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun StoreDatePicker(value: String, onChange: (String) -> Unit, label: String) {
+    var dialogOpen by remember { mutableStateOf(false) }
+    OutlinedButton(
+        onClick = { dialogOpen = true },
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(17.dp),
+        colors = ButtonDefaults.outlinedButtonColors(contentColor = StoreInk),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color(0xFF454B5B))
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), horizontalAlignment = Alignment.Start) {
+                Text(label, color = StoreMuted, fontSize = 10.sp)
+                Text(value, color = StoreInk, fontSize = 14.sp)
+            }
+            Text("Choose date", color = StoreMint, fontSize = 11.sp)
+        }
+    }
+
+    if (dialogOpen) {
+        val currentDate = runCatching { LocalDate.parse(value) }.getOrDefault(LocalDate.now())
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = currentDate.atStartOfDay(ZoneOffset.UTC).toInstant().toEpochMilli()
+        )
+        DatePickerDialog(
+            onDismissRequest = { dialogOpen = false },
+            confirmButton = {
+                TextButton(onClick = {
+                    pickerState.selectedDateMillis?.let { millis ->
+                        onChange(Instant.ofEpochMilli(millis).atZone(ZoneOffset.UTC).toLocalDate().toString())
+                    }
+                    dialogOpen = false
+                }) { Text("Select", color = StoreMint) }
+            },
+            dismissButton = {
+                TextButton(onClick = { dialogOpen = false }) { Text("Cancel", color = StoreMuted) }
+            }
+        ) {
+            DatePicker(state = pickerState, showModeToggle = false)
+        }
+    }
 }
 
 @Composable private fun Metric(label: String, value: String, modifier: Modifier = Modifier) {
-    Card(modifier, colors=CardDefaults.cardColors(containerColor=StoreCard), shape=RoundedCornerShape(17.dp)) { Column(Modifier.padding(11.dp)) { Text(label,color=StoreMuted,fontSize=9.sp); Text(value,color=StoreMint,fontSize=15.sp,fontWeight=FontWeight.Bold) } }
+    Card(modifier, colors=CardDefaults.cardColors(containerColor=StoreCard), shape=RoundedCornerShape(20.dp), elevation=CardDefaults.cardElevation(defaultElevation = 1.dp)) { Column(Modifier.padding(11.dp)) { Text(label,color=StoreMuted,fontSize=9.sp); Text(value,color=StoreMint,fontSize=15.sp,fontWeight=FontWeight.Bold) } }
 }
 
 @Composable private fun PanelCard(content: @Composable ColumnScope.()->Unit) {
-    Card(colors=CardDefaults.cardColors(containerColor=StoreCard), shape=RoundedCornerShape(20.dp), modifier=Modifier.fillMaxWidth()) { Column(Modifier.padding(14.dp), verticalArrangement=Arrangement.spacedBy(9.dp), content=content) }
+    Card(colors=CardDefaults.cardColors(containerColor=StoreCard), shape=RoundedCornerShape(23.dp), modifier=Modifier.fillMaxWidth(), elevation=CardDefaults.cardElevation(defaultElevation = 1.dp)) { Column(Modifier.padding(14.dp), verticalArrangement=Arrangement.spacedBy(9.dp), content=content) }
 }
 
 @Composable private fun ManagerStaff(staff: List<StoreStaff>, onCreate: (String,String,String)->Unit, onToggle: (Int,Boolean)->Unit) {
@@ -271,7 +351,7 @@ fun StorePortal(context: Context) {
     LazyColumn(verticalArrangement=Arrangement.spacedBy(9.dp)) {
         if(manager) item { PanelCard {
             Text("Schedule a shift",color=StoreInk,fontWeight=FontWeight.Bold)
-            StoreField(date,{date=it},"Date (YYYY-MM-DD)")
+            StoreDatePicker(date,{date=it},"Shift date")
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)) { listOf("morning","evening").forEach { FilterChip(selected=type==it,onClick={type=it},label={Text(if(it=="morning") "Morning" else "Evening")}) } }
             Text("Select staff",color=StoreMuted,fontSize=12.sp)
             staff.filter { it.active }.forEach { s -> Row(verticalAlignment=Alignment.CenterVertically) { Checkbox(checked=s.id in selected,onCheckedChange={selected=if(it) selected+s.id else selected-s.id},colors=CheckboxDefaults.colors(checkedColor=StoreMint)); Text(s.name,color=StoreInk) } }
@@ -290,7 +370,7 @@ fun StorePortal(context: Context) {
     LazyColumn(verticalArrangement=Arrangement.spacedBy(9.dp)) {
         if(manager) item { PanelCard {
             Text("Create task",color=StoreInk,fontWeight=FontWeight.Bold)
-            StoreField(title,{title=it},"Task title"); StoreField(date,{date=it},"Date (YYYY-MM-DD)")
+            StoreField(title,{title=it},"Task title"); StoreDatePicker(date,{date=it},"Task date")
             Row(horizontalArrangement=Arrangement.spacedBy(8.dp)){listOf("morning","evening").forEach{FilterChip(selected=type==it,onClick={type=it},label={Text(if(it=="morning") "Morning" else "Evening")})}}
             var expanded by remember { mutableStateOf(false) }
             Box { OutlinedButton(onClick={expanded=true},modifier=Modifier.fillMaxWidth()){Text(assignee,color=StoreInk)}; DropdownMenu(expanded,{expanded=false}) {
@@ -321,7 +401,7 @@ fun StorePortal(context: Context) {
     LazyColumn(verticalArrangement=Arrangement.spacedBy(9.dp)) {
         item { PanelCard {
             Text("Add product / expiry batch",color=StoreInk,fontWeight=FontWeight.Bold)
-            StoreField(name,{name=it},"Product name"); StoreField(category,{category=it},"Category"); StoreField(barcode,{barcode=it},"Barcode (optional)"); StoreField(expiry,{expiry=it},"Expiry date (YYYY-MM-DD)"); StoreField(quantity,{quantity=it.filter(Char::isDigit)},"Quantity")
+            StoreField(name,{name=it},"Product name"); StoreField(category,{category=it},"Category"); StoreField(barcode,{barcode=it},"Barcode (optional)"); StoreDatePicker(expiry,{expiry=it},"Expiry date"); StoreField(quantity,{quantity=it.filter(Char::isDigit)},"Quantity")
             Button(onClick={onCreate(name.trim(),category.trim(),barcode.trim(),expiry,quantity.toIntOrNull()?:0);name="";barcode=""},enabled=name.isNotBlank()&&runCatching{LocalDate.parse(expiry)}.isSuccess&&quantity.toIntOrNull()!=null,colors=ButtonDefaults.buttonColors(containerColor=StoreMint,contentColor=StoreBlack)){Text("Save product")}
             Text("Barcode is optional. Each product can have several batches with separate expiry dates.",color=StoreMuted,fontSize=10.sp)
         } }
@@ -331,7 +411,7 @@ fun StorePortal(context: Context) {
                 OutlinedButton(onClick={batchExpanded=true},modifier=Modifier.fillMaxWidth(),enabled=products.isNotEmpty()){Text(products.firstOrNull { it.id==batchProductId }?.name ?: "Choose existing product",color=StoreInk)}
                 DropdownMenu(expanded=batchExpanded,onDismissRequest={batchExpanded=false}) { products.distinctBy { it.id }.forEach { product -> DropdownMenuItem(text={Text(product.name)},onClick={batchProductId=product.id;batchExpanded=false}) } }
             }
-            StoreField(batchExpiry,{batchExpiry=it},"Batch expiry (YYYY-MM-DD)")
+            StoreDatePicker(batchExpiry,{batchExpiry=it},"Batch expiry date")
             StoreField(batchQuantity,{batchQuantity=it.filter(Char::isDigit)},"Batch quantity")
             Button(onClick={onAddBatch(batchProductId!!,batchExpiry,batchQuantity.toIntOrNull()?:0);batchProductId=null},enabled=batchProductId!=null&&runCatching{LocalDate.parse(batchExpiry)}.isSuccess&&batchQuantity.toIntOrNull()!=null,colors=ButtonDefaults.buttonColors(containerColor=StoreMint,contentColor=StoreBlack)){Text("Add batch") }
         } }
