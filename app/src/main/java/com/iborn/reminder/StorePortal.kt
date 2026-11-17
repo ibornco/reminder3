@@ -341,7 +341,13 @@ fun StorePortal(context: Context, english: Boolean = true, onOverview: (StoreOve
 @Composable private fun StoreDatePicker(value: String, onChange: (String) -> Unit, label: String) {
     var dialogOpen by remember { mutableStateOf(false) }
     val baseConfiguration = LocalConfiguration.current
-    val pickerConfiguration = remember(baseConfiguration, LocalStoreEnglish.current) { Configuration(baseConfiguration).apply { setLocale(if (LocalStoreEnglish.current) Locale.ENGLISH else Locale("fa", "IR")) } }
+    // Read CompositionLocal while in the composable scope; remember's calculation is not composable.
+    val isEnglish = LocalStoreEnglish.current
+    val pickerConfiguration = remember(baseConfiguration, isEnglish) {
+        Configuration(baseConfiguration).apply {
+            setLocale(if (isEnglish) Locale.ENGLISH else Locale("fa", "IR"))
+        }
+    }
     OutlinedButton(
         onClick = { dialogOpen = true },
         modifier = Modifier.fillMaxWidth(),
